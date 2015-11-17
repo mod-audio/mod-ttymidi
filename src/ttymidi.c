@@ -161,6 +161,53 @@ arguments_t arguments;
 /* --------------------------------------------------------------------- */
 // JACK stuff
 
+static int process_client(jack_nframes_t frames, void* ptr)
+{
+        if (! run)
+            return 0;
+
+        jackdata_t* jackdata = (jackdata_t*) ptr;
+
+        void* portbuf_in  = jack_port_get_buffer(jackdata->port_in,  frames);
+        void* portbuf_out = jack_port_get_buffer(jackdata->port_out, frames);
+
+        // MIDI from serial to JACK
+        jack_midi_clear_buffer(portbuf_in);
+
+        char bufc[3];
+        jack_midi_data_t bufj[3];
+        size_t bsize;
+        if (jack_ringbuffer_read(jackdata->ringbuffer, bufc, 3) == 3)
+        {
+            switch (bufc[0] & 0xF0)
+            {
+            case 0xC0:
+            case 0xD0:
+                bsize = 2;
+                break;
+            default:
+                bsize = 3;
+                break;
+            }
+
+            for (size_t i=0; i<bsize; ++i)
+                bufj[i] = bufc[i];
+
+            jack_midi_event_write(portbuf_in, 0, bufj, bsize);
+        }
+
+        // MIDI from JACK to serial
+        jack_midi_event_t event;
+        for (int i=0, count = jack_midi_get_event_count(portbuf_out); i<count; ++i)
+        {
+            jack_midi_event_get(&event, portbuf_out, i);
+
+            // TODO
+        }
+
+        return 0;
+}
+
 void open_client(jackdata_t* jackdata)
 {
         jack_client_t *client;
@@ -202,6 +249,8 @@ void open_client(jackdata_t* jackdata)
         jackdata->port_in = port_in;
         jackdata->port_out = port_out;
         jackdata->ringbuffer = ringbuffer;
+
+        jack_set_process_callback(client, process_client, jackdata);
 
         if (jack_activate(client) != 0)
         {

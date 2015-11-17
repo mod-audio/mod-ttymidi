@@ -3,7 +3,7 @@ DESTDIR ?=
 PREFIX = /usr/local
 
 CC ?= gcc
-CFLAGS += -std=gnu99 -Wall -Wextra -Wshadow
+CFLAGS += -std=gnu99 -Wall -Wextra -Wshadow -Werror
 
 all: ttymidi
 
