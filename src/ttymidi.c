@@ -30,6 +30,7 @@
 #include <jack/ringbuffer.h>
 #include <signal.h>
 #include <pthread.h>
+#include <semaphore.h>
 #include <unistd.h>
 // Linux-specific
 #include <linux/serial.h>
@@ -42,7 +43,7 @@
 /* change this definition for the correct port */
 //#define _POSIX_SOURCE 1 /* POSIX compliant source */
 
-bool run;
+volatile bool run;
 int serial;
 
 /* --------------------------------------------------------------------- */
@@ -72,7 +73,9 @@ typedef struct _jackdata
     jack_client_t* client;
     jack_port_t* port_in;
     jack_port_t* port_out;
-    jack_ringbuffer_t* ringbuffer;
+    jack_ringbuffer_t* ringbuffer_in;
+    jack_ringbuffer_t* ringbuffer_out;
+    sem_t sem;
 } jackdata_t;
 
 void exit_cli(int sig)
@@ -174,10 +177,10 @@ static int process_client(jack_nframes_t frames, void* ptr)
         // MIDI from serial to JACK
         jack_midi_clear_buffer(portbuf_in);
 
-        char bufc[3];
+        char bufc[4];
         jack_midi_data_t bufj[3];
         size_t bsize;
-        if (jack_ringbuffer_read(jackdata->ringbuffer, bufc, 3) == 3)
+        if (jack_ringbuffer_read(jackdata->ringbuffer_in, bufc, 3) == 3)
         {
             switch (bufc[0] & 0xF0)
             {
@@ -202,8 +205,24 @@ static int process_client(jack_nframes_t frames, void* ptr)
         {
             jack_midi_event_get(&event, portbuf_out, i);
 
-            // TODO
+            if (event.size > 3)
+                continue;
+
+            // set first byte as size
+            bufc[0] = event.size;
+
+            // copy the rest
+            size_t j = 0;
+            for (; j<event.size; ++j)
+                bufc[j] = event.buffer[j];
+            for (; j<4; ++j)
+                bufc[j] = 0;
+
+            // ready for ringbuffer
+            jack_ringbuffer_write(jackdata->ringbuffer_out, bufc, 4);
         }
+
+        sem_post(&jackdata->sem);
 
         return 0;
 }
@@ -212,7 +231,7 @@ void open_client(jackdata_t* jackdata)
 {
         jack_client_t *client;
         jack_port_t *port_in, *port_out;
-        jack_ringbuffer_t *ringbuffer;
+        jack_ringbuffer_t *ringbuffer_in, *ringbuffer_out;
 
         if ((client = jack_client_open(arguments.name, JackNoStartServer, NULL)) == NULL)
         {
@@ -234,12 +253,17 @@ void open_client(jackdata_t* jackdata)
                 fprintf(stderr, "Error creating output port.\n");
         }
 
-        if ((ringbuffer = jack_ringbuffer_create(MAX_MSG_SIZE-1)) == NULL)
+        if ((ringbuffer_in = jack_ringbuffer_create(MAX_MSG_SIZE-1)) == NULL)
         {
-                fprintf(stderr, "Error creating JACK ringbuffer.\n");
+                fprintf(stderr, "Error creating JACK input ringbuffer.\n");
         }
 
-        if (port_in == NULL || port_out == NULL || ringbuffer == NULL)
+        if ((ringbuffer_out = jack_ringbuffer_create(MAX_MSG_SIZE-1)) == NULL)
+        {
+                fprintf(stderr, "Error creating JACK output ringbuffer.\n");
+        }
+
+        if (port_in == NULL || port_out == NULL || ringbuffer_in == NULL || ringbuffer_out == NULL)
         {
                 jack_client_close(client);
                 exit(1);
@@ -248,7 +272,8 @@ void open_client(jackdata_t* jackdata)
         jackdata->client = client;
         jackdata->port_in = port_in;
         jackdata->port_out = port_out;
-        jackdata->ringbuffer = ringbuffer;
+        jackdata->ringbuffer_in = ringbuffer_in;
+        jackdata->ringbuffer_out = ringbuffer_out;
 
         jack_set_process_callback(client, process_client, jackdata);
 
@@ -259,7 +284,10 @@ void open_client(jackdata_t* jackdata)
                 exit(1);
         }
 
-        jack_ringbuffer_mlock(ringbuffer);
+        sem_init(&jackdata->sem, 0, 0);
+
+        jack_ringbuffer_mlock(ringbuffer_in);
+        jack_ringbuffer_mlock(ringbuffer_out);
 }
 
 void close_client(jackdata_t* jackdata)
@@ -267,230 +295,49 @@ void close_client(jackdata_t* jackdata)
         jack_deactivate(jackdata->client);
         jack_port_unregister(jackdata->client, jackdata->port_in);
         jack_port_unregister(jackdata->client, jackdata->port_out);
-        jack_ringbuffer_free(jackdata->ringbuffer);
+        jack_ringbuffer_free(jackdata->ringbuffer_in);
+        jack_ringbuffer_free(jackdata->ringbuffer_out);
         jack_client_close(jackdata->client);
+        sem_destroy(&jackdata->sem);
         bzero(jackdata, sizeof(*jackdata));
 }
 
 /* --------------------------------------------------------------------- */
 // MIDI stuff
 
-#if 0
-void parse_midi_command(snd_seq_t* seq, int port_out_id, char *buf)
+void* write_midi_from_jack(void* ptr)
 {
-	/*
-	   MIDI COMMANDS
-	   -------------------------------------------------------------------
-	   name                 status      param 1          param 2
-	   -------------------------------------------------------------------
-	   note off             0x80+C       key #            velocity
-	   note on              0x90+C       key #            velocity
-	   poly key pressure    0xA0+C       key #            pressure value
-	   control change       0xB0+C       control #        control value
-	   program change       0xC0+C       program #        --
-	   mono key pressure    0xD0+C       pressure value   --
-	   pitch bend           0xE0+C       range (LSB)      range (MSB)
-	   system               0xF0+C       manufacturer     model
-	   -------------------------------------------------------------------
-	   C is the channel number, from 0 to 15;
-	   -------------------------------------------------------------------
-	   source: http://ftp.ec.vanderbilt.edu/computermusic/musc216site/MIDI.Commands.html
+        jackdata_t* jackdata = (jackdata_t*) ptr;
 
-	   In this program the pitch bend range will be transmitter as
-	   one single 8-bit number. So the end result is that MIDI commands
-	   will be transmitted as 3 bytes, starting with the operation byte:
+        char bufc[4];
+        size_t size;
+        struct timespec timeout;
 
-	   buf[0] --> operation/channel
-	   buf[1] --> param1
-	   buf[2] --> param2        (param2 not transmitted on program change or key press)
-   */
+        while (run)
+        {
+                if (sem_trywait(&jackdata->sem) != 0)
+                {
+                        clock_gettime(CLOCK_REALTIME, &timeout);
+                        timeout.tv_sec  += 1;
 
-	snd_seq_event_t ev;
-	snd_seq_ev_clear(&ev);
-	snd_seq_ev_set_direct(&ev);
-	snd_seq_ev_set_source(&ev, port_out_id);
-	snd_seq_ev_set_subs(&ev);
+                        if (sem_timedwait(&jackdata->sem, &timeout) != 0)
+                                continue;
+                }
 
-	int operation, channel, param1, param2;
+                if (jack_ringbuffer_read(jackdata->ringbuffer_out, bufc, 4) == 4)
+                {
+                        size = (size_t)bufc[0];
+                        write(serial, bufc+1, size);
+                }
+        }
 
-	operation = buf[0] & 0xF0;
-	channel   = buf[0] & 0x0F;
-	param1    = buf[1];
-	param2    = buf[2];
-
-	switch (operation)
-	{
-		case 0x80:
-			if (!arguments.silent && arguments.verbose)
-				printf("Serial  0x%x Note off           %03u %03u %03u\n", operation, channel, param1, param2);
-			snd_seq_ev_set_noteoff(&ev, channel, param1, param2);
-			break;
-
-		case 0x90:
-			if (!arguments.silent && arguments.verbose)
-				printf("Serial  0x%x Note on            %03u %03u %03u\n", operation, channel, param1, param2);
-			snd_seq_ev_set_noteon(&ev, channel, param1, param2);
-			break;
-
-		case 0xA0:
-			if (!arguments.silent && arguments.verbose)
-				printf("Serial  0x%x Pressure change    %03u %03u %03u\n", operation, channel, param1, param2);
-			snd_seq_ev_set_keypress(&ev, channel, param1, param2);
-			break;
-
-		case 0xB0:
-			if (!arguments.silent && arguments.verbose)
-				printf("Serial  0x%x Controller change  %03u %03u %03u\n", operation, channel, param1, param2);
-			snd_seq_ev_set_controller(&ev, channel, param1, param2);
-			break;
-
-		case 0xC0:
-			if (!arguments.silent && arguments.verbose)
-				printf("Serial  0x%x Program change     %03u %03u\n", operation, channel, param1);
-			snd_seq_ev_set_pgmchange(&ev, channel, param1);
-			break;
-
-		case 0xD0:
-			if (!arguments.silent && arguments.verbose)
-				printf("Serial  0x%x Channel change     %03u %03u\n", operation, channel, param1);
-			snd_seq_ev_set_chanpress(&ev, channel, param1);
-			break;
-
-		case 0xE0:
-			param1 = (param1 & 0x7F) + ((param2 & 0x7F) << 7);
-			if (!arguments.silent && arguments.verbose)
-				printf("Serial  0x%x Pitch bend         %03u %05i\n", operation, channel, param1);
-			snd_seq_ev_set_pitchbend(&ev, channel, param1 - 8192); // in alsa MIDI we want signed int
-			break;
-
-		/* Not implementing system commands (0xF0) */
-
-		default:
-			if (!arguments.silent)
-				printf("0x%x Unknown MIDI cmd   %03u %03u %03u\n", operation, channel, param1, param2);
-			break;
-	}
-
-	snd_seq_event_output_direct(seq, &ev);
-	snd_seq_drain_output(seq);
+        return NULL;
 }
-
-void write_midi_action_to_serial_port(snd_seq_t* seq_handle)
-{
-	snd_seq_event_t* ev;
-	char bytes[] = {0x00, 0x00, 0xFF};
-
-	do
-	{
-		snd_seq_event_input(seq_handle, &ev);
-
-		switch (ev->type)
-		{
-
-			case SND_SEQ_EVENT_NOTEOFF:
-				bytes[0] = 0x80 + ev->data.control.channel;
-				bytes[1] = ev->data.note.note;
-				bytes[2] = ev->data.note.velocity;
-				if (!arguments.silent && arguments.verbose)
-					printf("Alsa    0x%x Note off           %03u %03u %03u\n", bytes[0]&0xF0, bytes[0]&0xF, bytes[1], bytes[2]);
-				break;
-
-			case SND_SEQ_EVENT_NOTEON:
-				bytes[0] = 0x90 + ev->data.control.channel;
-				bytes[1] = ev->data.note.note;
-				bytes[2] = ev->data.note.velocity;
-				if (!arguments.silent && arguments.verbose)
-					printf("Alsa    0x%x Note on            %03u %03u %03u\n", bytes[0]&0xF0, bytes[0]&0xF, bytes[1], bytes[2]);
-				break;
-
-			case SND_SEQ_EVENT_KEYPRESS:
-				bytes[0] = 0x90 + ev->data.control.channel;
-				bytes[1] = ev->data.note.note;
-				bytes[2] = ev->data.note.velocity;
-				if (!arguments.silent && arguments.verbose)
-					printf("Alsa    0x%x Pressure change    %03u %03u %03u\n", bytes[0]&0xF0, bytes[0]&0xF, bytes[1], bytes[2]);
-				break;
-
-			case SND_SEQ_EVENT_CONTROLLER:
-				bytes[0] = 0xB0 + ev->data.control.channel;
-				bytes[1] = ev->data.control.param;
-				bytes[2] = ev->data.control.value;
-				if (!arguments.silent && arguments.verbose)
-					printf("Alsa    0x%x Controller change  %03u %03u %03u\n", bytes[0]&0xF0, bytes[0]&0xF, bytes[1], bytes[2]);
-				break;
-
-			case SND_SEQ_EVENT_PGMCHANGE:
-				bytes[0] = 0xC0 + ev->data.control.channel;
-				bytes[1] = ev->data.control.value;
-				if (!arguments.silent && arguments.verbose)
-					printf("Alsa    0x%x Program change     %03u %03u %03u\n", bytes[0]&0xF0, bytes[0]&0xF, bytes[1], bytes[2]);
-				break;
-
-			case SND_SEQ_EVENT_CHANPRESS:
-				bytes[0] = 0xD0 + ev->data.control.channel;
-				bytes[1] = ev->data.control.value;
-				if (!arguments.silent && arguments.verbose)
-					printf("Alsa    0x%x Channel change     %03u %03u %03u\n", bytes[0]&0xF0, bytes[0]&0xF, bytes[1], bytes[2]);
-				break;
-
-			case SND_SEQ_EVENT_PITCHBEND:
-				bytes[0] = 0xE0 + ev->data.control.channel;
-				ev->data.control.value += 8192;
-				bytes[1] = (int)ev->data.control.value & 0x7F;
-				bytes[2] = (int)ev->data.control.value >> 7;
-				if (!arguments.silent && arguments.verbose)
-					printf("Alsa    0x%x Pitch bend         %03u %5d\n", bytes[0]&0xF0, bytes[0]&0xF, ev->data.control.value);
-				break;
-
-			default:
-				break;
-		}
-
-		if (bytes[0]!=0x00)
-		{
-			bytes[1] = (bytes[1] & 0x7F); // just to be sure that one bit is really zero
-			if (bytes[2]==0xFF) {
-				write(serial, bytes, 2);
-			} else {
-				bytes[2] = (bytes[2] & 0x7F);
-				write(serial, bytes, 3);
-			}
-		}
-
-		snd_seq_free_event(ev);
-
-	} while (snd_seq_event_input_pending(seq_handle, 0) > 0);
-}
-
-
-void* read_midi_from_alsa(void* seq)
-{
-	int npfd;
-	struct pollfd* pfd;
-	snd_seq_t* seq_handle;
-
-	seq_handle = seq;
-
-	npfd = snd_seq_poll_descriptors_count(seq_handle, POLLIN);
-	pfd = (struct pollfd*) alloca(npfd * sizeof(struct pollfd));
-	snd_seq_poll_descriptors(seq_handle, pfd, npfd, POLLIN);
-
-	while (run)
-	{
-		if (poll(pfd,npfd, 100) > 0)
-		{
-			write_midi_action_to_serial_port(seq_handle);
-		}
-	}
-
-	printf("\nStopping [PC]->[Hardware] communication...");
-}
-#endif
 
 void* read_midi_from_serial_port(void* ptr)
 {
-	char buf[4], msg[MAX_MSG_SIZE];
-	int msglen;
+        char buf[3], msg[MAX_MSG_SIZE];
+        int msglen;
 
         jackdata_t* jackdata = (jackdata_t*) ptr;
 
@@ -568,7 +415,7 @@ void* read_midi_from_serial_port(void* ptr)
 		/* parse MIDI message */
 		else
                 {
-                    jack_ringbuffer_write(jackdata->ringbuffer, buf, 3);
+                    jack_ringbuffer_write(jackdata->ringbuffer_in, buf, 3);
                 }
 	}
 
@@ -588,7 +435,7 @@ int main(int argc, char** argv)
 	argp_parse(&argp, argc, argv, 0, 0, &arguments);
 
 	/*
-	 * Open MIDI output port
+	 * Open JACK stuff
 	 */
 
 	open_client(&jackdata);
@@ -662,16 +509,14 @@ int main(int argc, char** argv)
 		printf("Super debug mode: Only printing the signal to screen. Nothing else.\n");
 	}
 
-#if 0
 	/*
 	 * read commands
 	 */
 
-	/* Starting thread that is polling alsa midi in port */
-	pthread_t midi_out_thread, midi_in_thread;
-	int iret1, iret2;
-	iret1 = pthread_create(&midi_out_thread, NULL, read_midi_from_alsa, (void*) seq);
-#endif
+	/* Starting thread that is writing jack port data */
+	pthread_t midi_out_thread;
+	pthread_create(&midi_out_thread, NULL, write_midi_from_jack, (void*) &jackdata);
+
         run = true;
 
         /* And also thread for polling serial data. As serial is currently read in
@@ -689,7 +534,7 @@ int main(int argc, char** argv)
 	}
 
 	close_client(&jackdata);
-	pthread_join(midi_in_thread, NULL);
+	pthread_join(midi_out_thread, NULL);
 
 	/* restore the old port settings */
 	tcsetattr(serial, TCSANOW, &oldtio);
