@@ -25,9 +25,12 @@
 #include <termios.h>
 #include <stdio.h>
 #include <argp.h>
-#include <alsa/asoundlib.h>
+#include <jack/jack.h>
+#include <jack/midiport.h>
+#include <jack/ringbuffer.h>
 #include <signal.h>
 #include <pthread.h>
+#include <unistd.h>
 // Linux-specific
 #include <linux/serial.h>
 #include <linux/ioctl.h>
@@ -41,19 +44,18 @@
 
 bool run;
 int serial;
-int port_out_id;
 
 /* --------------------------------------------------------------------- */
 // Program options
 
 static struct argp_option options[] =
 {
-	{"serialdevice" , 's', "DEV" , 0, "Serial device to use. Default = /dev/ttyUSB0" },
-	{"baudrate"     , 'b', "BAUD", 0, "Serial port baud rate. Default = 115200" },
-	{"verbose"      , 'v', 0     , 0, "For debugging: Produce verbose output" },
-	{"printonly"    , 'p', 0     , 0, "Super debugging: Print values read from serial -- and do nothing else" },
-	{"quiet"        , 'q', 0     , 0, "Don't produce any output, even when the print command is sent" },
-	{"name"		, 'n', "NAME", 0, "Name of the Alsa MIDI client. Default = ttymidi" },
+	{"serialdevice" , 's', "DEV" , 0, "Serial device to use. Default = /dev/ttyUSB0", 0 },
+	{"baudrate"     , 'b', "BAUD", 0, "Serial port baud rate. Default = 115200", 0 },
+	{"verbose"      , 'v', 0     , 0, "For debugging: Produce verbose output", 0 },
+	{"printonly"    , 'p', 0     , 0, "Super debugging: Print values read from serial -- and do nothing else", 0 },
+	{"quiet"        , 'q', 0     , 0, "Don't produce any output, even when the print command is sent", 0 },
+	{"name"		, 'n', "NAME", 0, "Name of the Alsa MIDI client. Default = ttymidi", 0 },
 	{ 0 }
 };
 
@@ -65,10 +67,21 @@ typedef struct _arguments
 	char name[MAX_DEV_STR_LEN];
 } arguments_t;
 
+typedef struct _jackdata
+{
+    jack_client_t* client;
+    jack_port_t* port_in;
+    jack_port_t* port_out;
+    jack_ringbuffer_t* ringbuffer;
+} jackdata_t;
+
 void exit_cli(int sig)
 {
-	run = false;
-	printf("\rttymidi closing down ... ");
+        run = false;
+        printf("\rttymidi closing down ... ");
+
+        // unused
+        return; (void)sig;
 }
 
 static error_t parse_opt (int key, char *arg, struct argp_state *state)
@@ -140,43 +153,80 @@ void arg_set_defaults(arguments_t *arguments)
 const char *argp_program_version     = "ttymidi 0.60";
 const char *argp_program_bug_address = "tvst@hotmail.com";
 static char doc[]       = "ttymidi - Connect serial port devices to ALSA MIDI programs!";
-static struct argp argp = { options, parse_opt, 0, doc };
+static struct argp argp = { options, parse_opt, NULL, doc, NULL, NULL, NULL };
 arguments_t arguments;
 
 
 
 /* --------------------------------------------------------------------- */
-// MIDI stuff
+// JACK stuff
 
-int open_seq(snd_seq_t** seq)
+void open_client(jackdata_t* jackdata)
 {
-	int port_out_id, port_in_id; // actually port_in_id is not needed nor used anywhere
+        jack_client_t *client;
+        jack_port_t *port_in, *port_out;
+        jack_ringbuffer_t *ringbuffer;
 
-	if (snd_seq_open(seq, "default", SND_SEQ_OPEN_DUPLEX, 0) < 0)
-	{
-		fprintf(stderr, "Error opening ALSA sequencer.\n");
-		exit(1);
-	}
+        if ((client = jack_client_open(arguments.name, JackNoStartServer, NULL)) == NULL)
+        {
+                fprintf(stderr, "Error opening JACK client.\n");
+                exit(1);
+        }
 
-	snd_seq_set_client_name(*seq, arguments.name);
+        if ((port_in = jack_port_register(client, "MIDI in", JACK_DEFAULT_MIDI_TYPE,
+                                          JackPortIsOutput|JackPortIsPhysical|JackPortIsTerminal,
+                                          0x0)) == NULL)
+        {
+                fprintf(stderr, "Error creating input port.\n");
+        }
 
-	if ((port_out_id = snd_seq_create_simple_port(*seq, "MIDI out",
-					SND_SEQ_PORT_CAP_READ|SND_SEQ_PORT_CAP_SUBS_READ,
-					SND_SEQ_PORT_TYPE_APPLICATION)) < 0)
-	{
-		fprintf(stderr, "Error creating sequencer port.\n");
-	}
+        if ((port_out = jack_port_register(client, "MIDI out", JACK_DEFAULT_MIDI_TYPE,
+                                           JackPortIsInput|JackPortIsPhysical|JackPortIsTerminal,
+                                           0x0)) == NULL)
+        {
+                fprintf(stderr, "Error creating output port.\n");
+        }
 
-	if ((port_in_id = snd_seq_create_simple_port(*seq, "MIDI in",
-					SND_SEQ_PORT_CAP_WRITE|SND_SEQ_PORT_CAP_SUBS_WRITE,
-					SND_SEQ_PORT_TYPE_APPLICATION)) < 0)
-	{
-		fprintf(stderr, "Error creating sequencer port.\n");
-	}
+        if ((ringbuffer = jack_ringbuffer_create(MAX_MSG_SIZE-1)) == NULL)
+        {
+                fprintf(stderr, "Error creating JACK ringbuffer.\n");
+        }
 
-	return port_out_id;
+        if (port_in == NULL || port_out == NULL || ringbuffer == NULL)
+        {
+                jack_client_close(client);
+                exit(1);
+        }
+
+        jackdata->client = client;
+        jackdata->port_in = port_in;
+        jackdata->port_out = port_out;
+        jackdata->ringbuffer = ringbuffer;
+
+        if (jack_activate(client) != 0)
+        {
+                fprintf(stderr, "Error activating JACK client.\n");
+                jack_client_close(client);
+                exit(1);
+        }
+
+        jack_ringbuffer_mlock(ringbuffer);
 }
 
+void close_client(jackdata_t* jackdata)
+{
+        jack_deactivate(jackdata->client);
+        jack_port_unregister(jackdata->client, jackdata->port_in);
+        jack_port_unregister(jackdata->client, jackdata->port_out);
+        jack_ringbuffer_free(jackdata->ringbuffer);
+        jack_client_close(jackdata->client);
+        bzero(jackdata, sizeof(*jackdata));
+}
+
+/* --------------------------------------------------------------------- */
+// MIDI stuff
+
+#if 0
 void parse_midi_command(snd_seq_t* seq, int port_out_id, char *buf)
 {
 	/*
@@ -386,11 +436,14 @@ void* read_midi_from_alsa(void* seq)
 
 	printf("\nStopping [PC]->[Hardware] communication...");
 }
+#endif
 
-void* read_midi_from_serial_port(void* seq)
+void* read_midi_from_serial_port(void* ptr)
 {
-	char buf[3], msg[MAX_MSG_SIZE];
-	int i, msglen;
+	char buf[4], msg[MAX_MSG_SIZE];
+	int msglen;
+
+        jackdata_t* jackdata = (jackdata_t*) ptr;
 
 	/* Lets first fast forward to first status byte... */
 	if (!arguments.printonly) {
@@ -429,8 +482,7 @@ void* read_midi_from_serial_port(void* seq)
 			} else {
 				/* Data byte received */
 				if (i == 2) {
-					/* It was 2nd data byte so we have a MIDI event
-					   process! */
+					/* It was 2nd data byte so we have a MIDI event process! */
 					i = 3;
 				} else {
 					/* Lets figure out are we done or should we read one more byte. */
@@ -465,8 +517,13 @@ void* read_midi_from_serial_port(void* seq)
 		}
 
 		/* parse MIDI message */
-		else parse_midi_command(seq, port_out_id, buf);
+		else
+                {
+                    jack_ringbuffer_write(jackdata->ringbuffer, buf, 3);
+                }
 	}
+
+	return NULL;
 }
 
 /* --------------------------------------------------------------------- */
@@ -476,9 +533,7 @@ int main(int argc, char** argv)
 {
 	//arguments arguments;
 	struct termios oldtio, newtio;
-	struct serial_struct ser_info;
-	char* modem_device = "/dev/ttyS0";
-	snd_seq_t *seq;
+	jackdata_t jackdata;
 
 	arg_set_defaults(&arguments);
 	argp_parse(&argp, argc, argv, 0, 0, &arguments);
@@ -487,14 +542,14 @@ int main(int argc, char** argv)
 	 * Open MIDI output port
 	 */
 
-	port_out_id = open_seq(&seq);
+	open_client(&jackdata);
 
 	/*
 	 *  Open modem device for reading and not as controlling tty because we don't
 	 *  want to get killed if linenoise sends CTRL-C.
 	 */
 
-	serial = open(arguments.serialdevice, O_RDWR | O_NOCTTY );
+	serial = open(arguments.serialdevice, O_RDWR | O_NOCTTY);
 
 	if (serial < 0)
 	{
@@ -547,16 +602,18 @@ int main(int argc, char** argv)
 	tcflush(serial, TCIFLUSH);
 	tcsetattr(serial, TCSANOW, &newtio);
 
-	// Linux-specific: enable low latency mode (FTDI "nagling off")
-//	ioctl(serial, TIOCGSERIAL, &ser_info);
-//	ser_info.flags |= ASYNC_LOW_LATENCY;
-//	ioctl(serial, TIOCSSERIAL, &ser_info);
+        // Linux-specific: enable low latency mode (FTDI "nagling off")
+        //struct serial_struct ser_info;
+        //ioctl(serial, TIOCGSERIAL, &ser_info);
+        //ser_info.flags |= ASYNC_LOW_LATENCY;
+        //ioctl(serial, TIOCSSERIAL, &ser_info);
 
 	if (arguments.printonly)
 	{
 		printf("Super debug mode: Only printing the signal to screen. Nothing else.\n");
 	}
 
+#if 0
 	/*
 	 * read commands
 	 */
@@ -564,25 +621,28 @@ int main(int argc, char** argv)
 	/* Starting thread that is polling alsa midi in port */
 	pthread_t midi_out_thread, midi_in_thread;
 	int iret1, iret2;
-	run = true;
 	iret1 = pthread_create(&midi_out_thread, NULL, read_midi_from_alsa, (void*) seq);
-	/* And also thread for polling serial data. As serial is currently read in
+#endif
+        run = true;
+
+        /* And also thread for polling serial data. As serial is currently read in
            blocking mode, by this we can enable ctrl+c quiting and avoid zombie
            alsa ports when killing app with ctrl+z */
-	iret2 = pthread_create(&midi_in_thread, NULL, read_midi_from_serial_port, (void*) seq);
+        pthread_t midi_in_thread;
+        pthread_create(&midi_in_thread, NULL, read_midi_from_serial_port, (void*) &jackdata);
+
 	signal(SIGINT, exit_cli);
 	signal(SIGTERM, exit_cli);
 
 	while (run)
 	{
-		sleep(100);
+		usleep(10000);
 	}
 
-	void* status;
-	pthread_join(midi_out_thread, &status);
+	close_client(&jackdata);
+	pthread_join(midi_in_thread, NULL);
 
 	/* restore the old port settings */
 	tcsetattr(serial, TCSANOW, &oldtio);
 	printf("\ndone!\n");
 }
-
