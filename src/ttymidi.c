@@ -16,6 +16,7 @@
 */
 
 
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
@@ -32,16 +33,13 @@
 #include <linux/ioctl.h>
 #include <asm/ioctls.h>
 
-#define FALSE                         0
-#define TRUE                          1
-
 #define MAX_DEV_STR_LEN               32
 #define MAX_MSG_SIZE                1024
 
 /* change this definition for the correct port */
 //#define _POSIX_SOURCE 1 /* POSIX compliant source */
 
-int run;
+bool run;
 int serial;
 int port_out_id;
 
@@ -69,7 +67,7 @@ typedef struct _arguments
 
 void exit_cli(int sig)
 {
-	run = FALSE;
+	run = false;
 	printf("\rttymidi closing down ... ");
 }
 
@@ -474,7 +472,7 @@ void* read_midi_from_serial_port(void* seq)
 /* --------------------------------------------------------------------- */
 // Main program
 
-main(int argc, char** argv)
+int main(int argc, char** argv)
 {
 	//arguments arguments;
 	struct termios oldtio, newtio;
@@ -566,7 +564,7 @@ main(int argc, char** argv)
 	/* Starting thread that is polling alsa midi in port */
 	pthread_t midi_out_thread, midi_in_thread;
 	int iret1, iret2;
-	run = TRUE;
+	run = true;
 	iret1 = pthread_create(&midi_out_thread, NULL, read_midi_from_alsa, (void*) seq);
 	/* And also thread for polling serial data. As serial is currently read in
            blocking mode, by this we can enable ctrl+c quiting and avoid zombie
