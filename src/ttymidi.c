@@ -180,7 +180,7 @@ static int process_client(jack_nframes_t frames, void* ptr)
         char bufc[4];
         jack_midi_data_t bufj[3];
         size_t bsize;
-        if (jack_ringbuffer_read(jackdata->ringbuffer_in, bufc, 3) == 3)
+        while (jack_ringbuffer_read(jackdata->ringbuffer_in, bufc, 3) == 3)
         {
             switch (bufc[0] & 0xF0)
             {
@@ -201,7 +201,7 @@ static int process_client(jack_nframes_t frames, void* ptr)
 
         // MIDI from JACK to serial
         jack_midi_event_t event;
-        for (int i=0, count = jack_midi_get_event_count(portbuf_out); i<count; ++i)
+        for (uint32_t i=0, count = jack_midi_get_event_count(portbuf_out); i<count; ++i)
         {
             if (jack_midi_event_get(&event, portbuf_out, i) != 0)
                 break;
@@ -212,16 +212,17 @@ static int process_client(jack_nframes_t frames, void* ptr)
             bufc[0] = event.size;
 
             // copy the rest
-            size_t j = 1;
-            for (; j<=event.size; ++j)
-                bufc[j] = event.buffer[j];
-            for (; j<4; ++j)
-                bufc[j] = 0;
+            size_t j=0;
+            for (; j<event.size; ++j)
+                bufc[j+1] = event.buffer[j];
+            for (; j<3; ++j)
+                bufc[j+1] = 0;
 
             // ready for ringbuffer
             jack_ringbuffer_write(jackdata->ringbuffer_out, bufc, 4);
         }
 
+        // Tell MIDI-out thread we're ready
         sem_post(&jackdata->sem);
 
         return 0;
@@ -318,10 +319,13 @@ void* write_midi_from_jack(void* ptr)
                 if (sem_trywait(&jackdata->sem) != 0)
                 {
                         clock_gettime(CLOCK_REALTIME, &timeout);
-                        timeout.tv_sec  += 1;
+                        timeout.tv_sec += 1;
 
                         if (sem_timedwait(&jackdata->sem, &timeout) != 0)
                                 continue;
+
+                        if (! run)
+                                break;
                 }
 
                 if (jack_ringbuffer_read(jackdata->ringbuffer_out, bufc, 4) == 4)
