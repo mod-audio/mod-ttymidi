@@ -203,8 +203,8 @@ static int process_client(jack_nframes_t frames, void* ptr)
         jack_midi_event_t event;
         for (int i=0, count = jack_midi_get_event_count(portbuf_out); i<count; ++i)
         {
-            jack_midi_event_get(&event, portbuf_out, i);
-
+            if (jack_midi_event_get(&event, portbuf_out, i) != 0)
+                break;
             if (event.size > 3)
                 continue;
 
@@ -212,8 +212,8 @@ static int process_client(jack_nframes_t frames, void* ptr)
             bufc[0] = event.size;
 
             // copy the rest
-            size_t j = 0;
-            for (; j<event.size; ++j)
+            size_t j = 1;
+            for (; j<=event.size; ++j)
                 bufc[j] = event.buffer[j];
             for (; j<4; ++j)
                 bufc[j] = 0;
