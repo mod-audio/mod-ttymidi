@@ -234,7 +234,7 @@ void open_client(jackdata_t* jackdata)
         jack_port_t *port_in, *port_out;
         jack_ringbuffer_t *ringbuffer_in, *ringbuffer_out;
 
-        if ((client = jack_client_open(arguments.name, JackNoStartServer, NULL)) == NULL)
+        if ((client = jack_client_open(arguments.name, JackNoStartServer|JackUseExactName, NULL)) == NULL)
         {
                 fprintf(stderr, "Error opening JACK client.\n");
                 exit(1);
