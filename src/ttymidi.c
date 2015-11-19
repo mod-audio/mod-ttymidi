@@ -36,6 +36,7 @@
 // Linux-specific
 #include <linux/serial.h>
 #include <linux/ioctl.h>
+#include <sys/ioctl.h>
 #include <asm/ioctls.h>
 
 #define MAX_DEV_STR_LEN               32
@@ -517,10 +518,10 @@ static bool _ttymidi_init(bool exit_on_failure, jack_client_t* client)
         tcsetattr(serial, TCSANOW, &newtio);
 
         // Linux-specific: enable low latency mode (FTDI "nagling off")
-        //struct serial_struct ser_info;
-        //ioctl(serial, TIOCGSERIAL, &ser_info);
-        //ser_info.flags |= ASYNC_LOW_LATENCY;
-        //ioctl(serial, TIOCSSERIAL, &ser_info);
+        struct serial_struct ser_info;
+        ioctl(serial, TIOCGSERIAL, &ser_info);
+        ser_info.flags |= ASYNC_LOW_LATENCY;
+        ioctl(serial, TIOCSSERIAL, &ser_info);
 
         if (arguments.printonly)
         {
