@@ -77,6 +77,7 @@ typedef struct _jackdata
     jack_ringbuffer_t* ringbuffer_in;
     jack_ringbuffer_t* ringbuffer_out;
     sem_t sem;
+    bool internal;
 } jackdata_t;
 
 void exit_cli(int sig)
@@ -242,6 +243,10 @@ bool open_client(jackdata_t* jackdata, jack_client_t* client)
                     return false;
             }
         }
+        else
+        {
+            jackdata->internal = true;
+        }
 
         if ((port_in = jack_port_register(client, "MIDI in", JACK_DEFAULT_MIDI_TYPE,
                                           JackPortIsOutput|JackPortIsPhysical|JackPortIsTerminal,
@@ -303,7 +308,10 @@ void close_client(jackdata_t* jackdata)
         jack_port_unregister(jackdata->client, jackdata->port_out);
         jack_ringbuffer_free(jackdata->ringbuffer_in);
         jack_ringbuffer_free(jackdata->ringbuffer_out);
-        jack_client_close(jackdata->client);
+
+        if (! jackdata->internal)
+                jack_client_close(jackdata->client);
+
         sem_destroy(&jackdata->sem);
         bzero(jackdata, sizeof(*jackdata));
 }
@@ -537,7 +545,7 @@ static bool _ttymidi_init(bool exit_on_failure, jack_client_t* client)
         return true;
 }
 
-void _ttymidi_finish()
+void _ttymidi_finish(void)
 {
         close_client(&jackdata);
         pthread_join(midi_out_thread, NULL);
@@ -588,5 +596,6 @@ void jack_finish(void);
 
 void jack_finish()
 {
+        run = false;
         _ttymidi_finish();
 }
