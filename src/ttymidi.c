@@ -574,28 +574,28 @@ int main(int argc, char** argv)
 }
 
 __attribute__ ((visibility("default")))
-int jack_initialize(jack_client_t* client, const char* name);
+int jack_initialize(jack_client_t* client, const char* load_init);
 
-int jack_initialize(jack_client_t* client, const char* name)
+int jack_initialize(jack_client_t* client, const char* load_init)
 {
         arg_set_defaults(&arguments);
 
         // MOD settings
-        // TODO
+        arguments.baudrate = B38400;
+
+        if (load_init != NULL && load_init[0] != '\0')
+            strncpy(arguments.serialdevice, load_init, MAX_DEV_STR_LEN);
 
         if (! _ttymidi_init(false, client))
                 return 1;
 
         return 0;
-
-        // unused
-        (void)name;
 }
 
 __attribute__ ((visibility("default")))
 void jack_finish(void);
 
-void jack_finish()
+void jack_finish(void)
 {
         run = false;
         _ttymidi_finish();
