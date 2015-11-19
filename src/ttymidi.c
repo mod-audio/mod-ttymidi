@@ -26,6 +26,7 @@
 #include <stdio.h>
 #include <argp.h>
 #include <jack/jack.h>
+#include <jack/intclient.h>
 #include <jack/midiport.h>
 #include <jack/ringbuffer.h>
 #include <signal.h>
@@ -56,7 +57,7 @@ static struct argp_option options[] =
 	{"verbose"      , 'v', 0     , 0, "For debugging: Produce verbose output", 0 },
 	{"printonly"    , 'p', 0     , 0, "Super debugging: Print values read from serial -- and do nothing else", 0 },
 	{"quiet"        , 'q', 0     , 0, "Don't produce any output, even when the print command is sent", 0 },
-	{"name"		, 'n', "NAME", 0, "Name of the Alsa MIDI client. Default = ttymidi", 0 },
+	{"name"		, 'n', "NAME", 0, "Name of the JACK client. Default = ttymidi", 0 },
 	{ 0 }
 };
 
@@ -155,7 +156,7 @@ void arg_set_defaults(arguments_t *arguments)
 
 const char *argp_program_version     = "ttymidi 0.60";
 const char *argp_program_bug_address = "tvst@hotmail.com";
-static char doc[]       = "ttymidi - Connect serial port devices to ALSA MIDI programs!";
+static char doc[]       = "ttymidi - Connect serial port devices to JACK MIDI programs!";
 static struct argp argp = { options, parse_opt, NULL, doc, NULL, NULL, NULL };
 arguments_t arguments;
 
@@ -228,16 +229,20 @@ static int process_client(jack_nframes_t frames, void* ptr)
         return 0;
 }
 
-void open_client(jackdata_t* jackdata)
+bool open_client(jackdata_t* jackdata, jack_client_t* client)
 {
-        jack_client_t *client;
         jack_port_t *port_in, *port_out;
         jack_ringbuffer_t *ringbuffer_in, *ringbuffer_out;
 
-        if ((client = jack_client_open(arguments.name, JackNoStartServer|JackUseExactName, NULL)) == NULL)
+        if (client == NULL)
         {
-                fprintf(stderr, "Error opening JACK client.\n");
-                exit(1);
+            client = jack_client_open(arguments.name, JackNoStartServer|JackUseExactName, NULL);
+
+            if (client == NULL)
+            {
+                    fprintf(stderr, "Error opening JACK client.\n");
+                    return false;
+            }
         }
 
         if ((port_in = jack_port_register(client, "MIDI in", JACK_DEFAULT_MIDI_TYPE,
@@ -267,7 +272,7 @@ void open_client(jackdata_t* jackdata)
         if (port_in == NULL || port_out == NULL || ringbuffer_in == NULL || ringbuffer_out == NULL)
         {
                 jack_client_close(client);
-                exit(1);
+                return false;
         }
 
         jackdata->client = client;
@@ -282,13 +287,15 @@ void open_client(jackdata_t* jackdata)
         {
                 fprintf(stderr, "Error activating JACK client.\n");
                 jack_client_close(client);
-                exit(1);
+                return false;
         }
 
         sem_init(&jackdata->sem, 0, 0);
 
         jack_ringbuffer_mlock(ringbuffer_in);
         jack_ringbuffer_mlock(ringbuffer_out);
+
+        return true;
 }
 
 void close_client(jackdata_t* jackdata)
@@ -429,78 +436,79 @@ void* read_midi_from_serial_port(void* ptr)
 /* --------------------------------------------------------------------- */
 // Main program
 
-int main(int argc, char** argv)
+struct termios oldtio, newtio;
+jackdata_t jackdata;
+pthread_t midi_out_thread;
+
+static bool _ttymidi_init(bool exit_on_failure, jack_client_t* client)
 {
-	//arguments arguments;
-	struct termios oldtio, newtio;
-	jackdata_t jackdata;
+        /*
+         * Open JACK stuff
+         */
 
-	arg_set_defaults(&arguments);
-	argp_parse(&argp, argc, argv, 0, 0, &arguments);
+        open_client(&jackdata, client);
 
-	/*
-	 * Open JACK stuff
-	 */
+        /*
+         *  Open modem device for reading and not as controlling tty because we don't
+         *  want to get killed if linenoise sends CTRL-C.
+         */
 
-	open_client(&jackdata);
+        serial = open(arguments.serialdevice, O_RDWR | O_NOCTTY);
 
-	/*
-	 *  Open modem device for reading and not as controlling tty because we don't
-	 *  want to get killed if linenoise sends CTRL-C.
-	 */
+        if (serial < 0)
+        {
+                if (exit_on_failure)
+                {
+                        perror(arguments.serialdevice);
+                        exit(-1);
+                }
+                return false;
+        }
 
-	serial = open(arguments.serialdevice, O_RDWR | O_NOCTTY);
+        /* save current serial port settings */
+        tcgetattr(serial, &oldtio);
 
-	if (serial < 0)
-	{
-		perror(arguments.serialdevice);
-		exit(-1);
-	}
+        /* clear struct for new port settings */
+        bzero(&newtio, sizeof(newtio));
 
-	/* save current serial port settings */
-	tcgetattr(serial, &oldtio);
+        /*
+         * BAUDRATE : Set bps rate. You could also use cfsetispeed and cfsetospeed.
+         * CRTSCTS  : output hardware flow control (only used if the cable has
+         * all necessary lines. See sect. 7 of Serial-HOWTO)
+         * CS8      : 8n1 (8bit, no parity, 1 stopbit)
+         * CLOCAL   : local connection, no modem contol
+         * CREAD    : enable receiving characters
+         */
+        newtio.c_cflag = arguments.baudrate | CS8 | CLOCAL | CREAD; // CRTSCTS removed
 
-	/* clear struct for new port settings */
-	bzero(&newtio, sizeof(newtio));
+        /*
+         * IGNPAR  : ignore bytes with parity errors
+         * ICRNL   : map CR to NL (otherwise a CR input on the other computer
+         * will not terminate input)
+         * otherwise make device raw (no other input processing)
+         */
+        newtio.c_iflag = IGNPAR;
 
-	/*
-	 * BAUDRATE : Set bps rate. You could also use cfsetispeed and cfsetospeed.
-	 * CRTSCTS  : output hardware flow control (only used if the cable has
-	 * all necessary lines. See sect. 7 of Serial-HOWTO)
-	 * CS8      : 8n1 (8bit, no parity, 1 stopbit)
-	 * CLOCAL   : local connection, no modem contol
-	 * CREAD    : enable receiving characters
-	 */
-	newtio.c_cflag = arguments.baudrate | CS8 | CLOCAL | CREAD; // CRTSCTS removed
+        /* Raw output */
+        newtio.c_oflag = 0;
 
-	/*
-	 * IGNPAR  : ignore bytes with parity errors
-	 * ICRNL   : map CR to NL (otherwise a CR input on the other computer
-	 * will not terminate input)
-	 * otherwise make device raw (no other input processing)
-	 */
-	newtio.c_iflag = IGNPAR;
+        /*
+         * ICANON  : enable canonical input
+         * disable all echo functionality, and don't send signals to calling program
+         */
+        newtio.c_lflag = 0; // non-canonical
 
-	/* Raw output */
-	newtio.c_oflag = 0;
+        /*
+         * set up: we'll be reading 4 bytes at a time.
+         */
+        newtio.c_cc[VTIME] = 0;     /* inter-character timer unused */
+        newtio.c_cc[VMIN]  = 1;     /* blocking read until n character arrives */
 
-	/*
-	 * ICANON  : enable canonical input
-	 * disable all echo functionality, and don't send signals to calling program
-	 */
-	newtio.c_lflag = 0; // non-canonical
-
-	/*
-	 * set up: we'll be reading 4 bytes at a time.
-	 */
-	newtio.c_cc[VTIME]    = 0;     /* inter-character timer unused */
-	newtio.c_cc[VMIN]     = 1;     /* blocking read until n character arrives */
-
-	/*
-	 * now clean the modem line and activate the settings for the port
-	 */
-	tcflush(serial, TCIFLUSH);
-	tcsetattr(serial, TCSANOW, &newtio);
+        /*
+         * now clean the modem line and activate the settings for the port
+         */
+        tcflush(serial, TCIFLUSH);
+        tcsetattr(serial, TCSANOW, &newtio);
 
         // Linux-specific: enable low latency mode (FTDI "nagling off")
         //struct serial_struct ser_info;
@@ -508,18 +516,17 @@ int main(int argc, char** argv)
         //ser_info.flags |= ASYNC_LOW_LATENCY;
         //ioctl(serial, TIOCSSERIAL, &ser_info);
 
-	if (arguments.printonly)
-	{
-		printf("Super debug mode: Only printing the signal to screen. Nothing else.\n");
-	}
+        if (arguments.printonly)
+        {
+                printf("Super debug mode: Only printing the signal to screen. Nothing else.\n");
+        }
 
-	/*
-	 * read commands
-	 */
+        /*
+         * read commands
+         */
 
-	/* Starting thread that is writing jack port data */
-	pthread_t midi_out_thread;
-	pthread_create(&midi_out_thread, NULL, write_midi_from_jack, (void*) &jackdata);
+        /* Starting thread that is writing jack port data */
+        pthread_create(&midi_out_thread, NULL, write_midi_from_jack, (void*) &jackdata);
 
         run = true;
 
@@ -529,18 +536,53 @@ int main(int argc, char** argv)
         pthread_t midi_in_thread;
         pthread_create(&midi_in_thread, NULL, read_midi_from_serial_port, (void*) &jackdata);
 
-	signal(SIGINT, exit_cli);
-	signal(SIGTERM, exit_cli);
+        return true;
+}
 
-	while (run)
-	{
-		usleep(10000);
-	}
+void _ttymidi_finish()
+{
+        close_client(&jackdata);
+        pthread_join(midi_out_thread, NULL);
 
-	close_client(&jackdata);
-	pthread_join(midi_out_thread, NULL);
+        /* restore the old port settings */
+        tcsetattr(serial, TCSANOW, &oldtio);
+        printf("\ndone!\n");
+}
 
-	/* restore the old port settings */
-	tcsetattr(serial, TCSANOW, &oldtio);
-	printf("\ndone!\n");
+int main(int argc, char** argv)
+{
+        arg_set_defaults(&arguments);
+        argp_parse(&argp, argc, argv, 0, 0, &arguments);
+
+        if (! _ttymidi_init(true, NULL))
+                return 1;
+
+        signal(SIGINT, exit_cli);
+        signal(SIGTERM, exit_cli);
+
+        while (run)
+                usleep(10000);
+
+        _ttymidi_finish();
+}
+
+int jack_initialize(jack_client_t* client, const char* name)
+{
+        arg_set_defaults(&arguments);
+
+        // MOD settings
+        // TODO
+
+        if (! _ttymidi_init(false, client))
+                return 1;
+
+        return 0;
+
+        // unused
+        (void)name;
+}
+
+void jack_finish()
+{
+        _ttymidi_finish();
 }
