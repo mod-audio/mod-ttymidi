@@ -160,8 +160,6 @@ static char doc[]       = "ttymidi - Connect serial port devices to JACK MIDI pr
 static struct argp argp = { options, parse_opt, NULL, doc, NULL, NULL, NULL };
 arguments_t arguments;
 
-
-
 /* --------------------------------------------------------------------- */
 // JACK stuff
 
@@ -326,7 +324,7 @@ void* write_midi_from_jack(void* ptr)
                 if (sem_trywait(&jackdata->sem) != 0)
                 {
                         clock_gettime(CLOCK_REALTIME, &timeout);
-                        timeout.tv_sec += 1;
+                        timeout.tv_nsec += 100000000; // 100 ms
 
                         if (sem_timedwait(&jackdata->sem, &timeout) != 0)
                                 continue;
@@ -561,10 +559,13 @@ int main(int argc, char** argv)
         signal(SIGTERM, exit_cli);
 
         while (run)
-                usleep(10000);
+                usleep(100000); // 100 ms
 
         _ttymidi_finish();
 }
+
+__attribute__ ((visibility("default")))
+int jack_initialize(jack_client_t* client, const char* name);
 
 int jack_initialize(jack_client_t* client, const char* name)
 {
@@ -581,6 +582,9 @@ int jack_initialize(jack_client_t* client, const char* name)
         // unused
         (void)name;
 }
+
+__attribute__ ((visibility("default")))
+void jack_finish(void);
 
 void jack_finish()
 {
