@@ -249,14 +249,14 @@ bool open_client(jackdata_t* jackdata, jack_client_t* client)
             jackdata->internal = true;
         }
 
-        if ((port_in = jack_port_register(client, "MIDI in", JACK_DEFAULT_MIDI_TYPE,
+        if ((port_in = jack_port_register(client, "MIDI_in", JACK_DEFAULT_MIDI_TYPE,
                                           JackPortIsOutput|JackPortIsPhysical|JackPortIsTerminal,
                                           0x0)) == NULL)
         {
                 fprintf(stderr, "Error creating input port.\n");
         }
 
-        if ((port_out = jack_port_register(client, "MIDI out", JACK_DEFAULT_MIDI_TYPE,
+        if ((port_out = jack_port_register(client, "MIDI_out", JACK_DEFAULT_MIDI_TYPE,
                                            JackPortIsInput|JackPortIsPhysical|JackPortIsTerminal,
                                            0x0)) == NULL)
         {
