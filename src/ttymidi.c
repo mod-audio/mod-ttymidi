@@ -330,17 +330,14 @@ void* write_midi_from_jack(void* ptr)
 
         while (run)
         {
-                if (sem_trywait(&jackdata->sem) != 0)
-                {
-                        clock_gettime(CLOCK_REALTIME, &timeout);
-                        timeout.tv_nsec += 100000000; // 100 ms
+                clock_gettime(CLOCK_REALTIME, &timeout);
+                timeout.tv_nsec += 100000000; // 100 ms
 
-                        if (sem_timedwait(&jackdata->sem, &timeout) != 0)
-                                continue;
+                if (sem_timedwait(&jackdata->sem, &timeout) != 0)
+                        continue;
 
-                        if (! run)
-                                break;
-                }
+                if (! run)
+                        break;
 
                 if (jack_ringbuffer_read(jackdata->ringbuffer_out, bufc, 4) == 4)
                 {
