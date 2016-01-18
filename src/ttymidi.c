@@ -201,7 +201,7 @@ static int process_client(jack_nframes_t frames, void* ptr)
         }
 
         // MIDI from JACK to serial
-        uint32_t event_count = jack_midi_get_event_count(portbuf_out)
+        uint32_t event_count = jack_midi_get_event_count(portbuf_out);
 
         if (event_count > 0)
         {
