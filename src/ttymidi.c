@@ -529,10 +529,24 @@ static bool _ttymidi_init(bool exit_on_failure, jack_client_t* client)
          * read commands
          */
 
+        run = true;
+
+        /* Give high priority to our threads */
+        pthread_attr_t attributes;
+        pthread_attr_init(&attributes);
+        pthread_attr_setdetachstate(&attributes, PTHREAD_CREATE_JOINABLE);
+        pthread_attr_setinheritsched(&attributes, PTHREAD_EXPLICIT_SCHED);
+        pthread_attr_setscope(&attributes, PTHREAD_SCOPE_SYSTEM);
+        pthread_attr_setschedpolicy(&attributes, SCHED_FIFO);
+
+        struct sched_param rt_param;
+        memset(&rt_param, 0, sizeof(rt_param));
+        rt_param.sched_priority = 80;
+
+        pthread_attr_setschedparam(&attributes, &rt_param);
+
         /* Starting thread that is writing jack port data */
         pthread_create(&midi_out_thread, NULL, write_midi_from_jack, (void*) &jackdata);
-
-        run = true;
 
         /* And also thread for polling serial data. As serial is currently read in
            blocking mode, by this we can enable ctrl+c quiting and avoid zombie
@@ -540,6 +554,7 @@ static bool _ttymidi_init(bool exit_on_failure, jack_client_t* client)
         pthread_t midi_in_thread;
         pthread_create(&midi_in_thread, NULL, read_midi_from_serial_port, (void*) &jackdata);
 
+        pthread_attr_destroy(&attributes);
         return true;
 }
 
