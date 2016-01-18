@@ -201,30 +201,36 @@ static int process_client(jack_nframes_t frames, void* ptr)
         }
 
         // MIDI from JACK to serial
-        jack_midi_event_t event;
-        for (uint32_t i=0, count = jack_midi_get_event_count(portbuf_out); i<count; ++i)
+        uint32_t event_count = jack_midi_get_event_count(portbuf_out)
+
+        if (event_count > 0)
         {
-            if (jack_midi_event_get(&event, portbuf_out, i) != 0)
-                break;
-            if (event.size > 3)
-                continue;
+            jack_midi_event_t event;
 
-            // set first byte as size
-            bufc[0] = event.size;
+            for (uint32_t i=0; i<event_count; ++i)
+            {
+                if (jack_midi_event_get(&event, portbuf_out, i) != 0)
+                    break;
+                if (event.size > 3)
+                    continue;
 
-            // copy the rest
-            size_t j=0;
-            for (; j<event.size; ++j)
-                bufc[j+1] = event.buffer[j];
-            for (; j<3; ++j)
-                bufc[j+1] = 0;
+                // set first byte as size
+                bufc[0] = event.size;
 
-            // ready for ringbuffer
-            jack_ringbuffer_write(jackdata->ringbuffer_out, bufc, 4);
+                // copy the rest
+                size_t j=0;
+                for (; j<event.size; ++j)
+                    bufc[j+1] = event.buffer[j];
+                for (; j<3; ++j)
+                    bufc[j+1] = 0;
+
+                // ready for ringbuffer
+                jack_ringbuffer_write(jackdata->ringbuffer_out, bufc, 4);
+            }
+
+            // Tell MIDI-out thread we have data
+            sem_post(&jackdata->sem);
         }
-
-        // Tell MIDI-out thread we're ready
-        sem_post(&jackdata->sem);
 
         return 0;
 }
@@ -331,13 +337,15 @@ void* write_midi_from_jack(void* ptr)
         while (run)
         {
                 clock_gettime(CLOCK_REALTIME, &timeout);
-                timeout.tv_nsec += 100000000; // 100 ms
+                timeout.tv_nsec += 1000000000; // 1 sec
 
                 if (sem_timedwait(&jackdata->sem, &timeout) != 0)
+                {
+                        if (! run) break;
                         continue;
+                }
 
-                if (! run)
-                        break;
+                if (! run) break;
 
                 if (jack_ringbuffer_read(jackdata->ringbuffer_out, bufc, 4) == 4)
                 {
