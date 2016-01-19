@@ -340,10 +340,7 @@ void* write_midi_from_jack(void* ptr)
                 timeout.tv_nsec += 1000000000; // 1 sec
 
                 if (sem_timedwait(&jackdata->sem, &timeout) != 0)
-                {
-                        if (! run) break;
                         continue;
-                }
 
                 if (! run) break;
 
@@ -544,7 +541,7 @@ static bool _ttymidi_init(bool exit_on_failure, jack_client_t* client)
         pthread_attr_init(&attributes);
         pthread_attr_setdetachstate(&attributes, PTHREAD_CREATE_JOINABLE);
         pthread_attr_setinheritsched(&attributes, PTHREAD_EXPLICIT_SCHED);
-        pthread_attr_setscope(&attributes, PTHREAD_SCOPE_SYSTEM);
+        pthread_attr_setscope(&attributes, (client != NULL) ? PTHREAD_SCOPE_PROCESS : PTHREAD_SCOPE_SYSTEM);
         pthread_attr_setschedpolicy(&attributes, SCHED_FIFO);
 
         struct sched_param rt_param;
@@ -554,7 +551,7 @@ static bool _ttymidi_init(bool exit_on_failure, jack_client_t* client)
         pthread_attr_setschedparam(&attributes, &rt_param);
 
         /* Starting thread that is writing jack port data */
-        pthread_create(&midi_out_thread, NULL, write_midi_from_jack, (void*) &jackdata);
+        pthread_create(&midi_out_thread, &attributes, write_midi_from_jack, (void*) &jackdata);
 
         /* And also thread for polling serial data. As serial is currently read in
            blocking mode, by this we can enable ctrl+c quiting and avoid zombie
