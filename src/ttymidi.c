@@ -337,7 +337,7 @@ void* write_midi_from_jack(void* ptr)
         while (run)
         {
                 clock_gettime(CLOCK_REALTIME, &timeout);
-                timeout.tv_nsec += 1000000000; // 1 sec
+                timeout.tv_sec += 1;
 
                 if (sem_timedwait(&jackdata->sem, &timeout) != 0)
                         continue;
