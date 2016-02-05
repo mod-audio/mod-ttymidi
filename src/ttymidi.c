@@ -305,6 +305,13 @@ bool open_client(jackdata_t* jackdata, jack_client_t* client)
         jack_ringbuffer_mlock(ringbuffer_in);
         jack_ringbuffer_mlock(ringbuffer_out);
 
+        if (jack_port_by_name(client, "mod-host:midi_in") != NULL)
+        {
+                char ourportname[255];
+                sprintf(ourportname, "%s:MIDI_in", jack_get_client_name(client));
+                jack_connect(client, ourportname, "mod-host:midi_in");
+        }
+
         return true;
 }
 
