@@ -15,6 +15,7 @@
     along with ttymidi.  If not, see <http://www.gnu.org/licenses/>.
 */
 
+#define TTYMIDI_USE_FUTEX
 
 #include <stdbool.h>
 #include <stdlib.h>
@@ -31,13 +32,19 @@
 #include <jack/ringbuffer.h>
 #include <signal.h>
 #include <pthread.h>
-#include <semaphore.h>
 #include <unistd.h>
 // Linux-specific
 #include <linux/serial.h>
 #include <linux/ioctl.h>
 #include <sys/ioctl.h>
 #include <asm/ioctls.h>
+
+#ifdef TTYMIDI_USE_FUTEX
+#include <syscall.h>
+#include <linux/futex.h>
+#else
+#include <semaphore.h>
+#endif
 
 #define MAX_DEV_STR_LEN               32
 #define MAX_MSG_SIZE                1024
@@ -47,6 +54,65 @@
 
 volatile bool run;
 int serial;
+
+#ifdef TTYMIDI_USE_FUTEX
+/* --------------------------------------------------------------------- */
+// Linux futex
+
+typedef int sem_t;
+
+static
+void sem_init(sem_t* sem, int pshared, int value)
+{
+	*sem = value;
+
+	// unused
+	return; (void)pshared;
+}
+
+static
+void sem_destroy(sem_t* sem)
+{
+	// unused
+	return; (void)sem;
+}
+
+static
+void sem_post(sem_t* sem)
+{
+	if (! __sync_bool_compare_and_swap(sem, 0, 1)) {
+		// already unlocked, do not wake futex
+		return;
+	}
+
+	syscall(__NR_futex, sem, FUTEX_WAKE, 1, NULL, NULL, 0);
+	return;
+}
+
+static
+int sem_timedwait_secs(sem_t* sem, int secs)
+{
+	const struct timespec timeout = { secs, 0 };
+
+	for (;;)
+	{
+		if (__sync_bool_compare_and_swap(sem, 1, 0))
+			return 0;
+
+		if (syscall(__NR_futex, sem, FUTEX_WAIT, 0, &timeout, NULL, 0) != 0 && errno != EWOULDBLOCK)
+			return 1;
+	}
+}
+#else
+static
+int sem_timedwait_secs(sem_t* sem, int secs)
+{
+	  struct timespec timeout;
+	  clock_gettime(CLOCK_REALTIME, &timeout);
+	  timeout.tv_sec += secs;
+	  return sem_timedwait(sem, &timeout);
+}
+#endif
 
 /* --------------------------------------------------------------------- */
 // Program options
@@ -339,14 +405,10 @@ void* write_midi_from_jack(void* ptr)
 
         char bufc[4];
         size_t size;
-        struct timespec timeout;
 
         while (run)
         {
-                clock_gettime(CLOCK_REALTIME, &timeout);
-                timeout.tv_sec += 1;
-
-                if (sem_timedwait(&jackdata->sem, &timeout) != 0)
+                if (sem_timedwait_secs(&jackdata->sem, 1) != 0)
                         continue;
 
                 if (! run) break;
