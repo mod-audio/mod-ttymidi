@@ -85,7 +85,7 @@ void sem_post(sem_t* sem)
 		return;
 	}
 
-	syscall(__NR_futex, sem, FUTEX_WAKE, 1, NULL, NULL, 0);
+	syscall(__NR_futex, sem, FUTEX_WAKE_PRIVATE, 1, NULL, NULL, 0);
 	return;
 }
 
@@ -99,7 +99,7 @@ int sem_timedwait_secs(sem_t* sem, int secs)
 		if (__sync_bool_compare_and_swap(sem, 1, 0))
 			return 0;
 
-		if (syscall(__NR_futex, sem, FUTEX_WAIT, 0, &timeout, NULL, 0) != 0 && errno != EWOULDBLOCK)
+		if (syscall(__NR_futex, sem, FUTEX_WAIT_PRIVATE, 0, &timeout, NULL, 0) != 0 && errno != EWOULDBLOCK)
 			return 1;
 	}
 }
