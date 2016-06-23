@@ -8,10 +8,10 @@ LDFLAGS += -Wl,--no-undefined
 
 all: ttymidi ttymidi.so
 
-ttymidi: src/ttymidi.c
+ttymidi: src/ttymidi.c src/mod-semaphore.h
 	$(CC) $< $(CFLAGS) $(shell pkg-config --cflags --libs jack) $(LDFLAGS) -lpthread -o $@
 
-ttymidi.so: src/ttymidi.c
+ttymidi.so: src/ttymidi.c src/mod-semaphore.h
 	$(CC) $< $(CFLAGS) $(shell pkg-config --cflags --libs jack) $(LDFLAGS) -fPIC -lpthread -shared -o $@
 
 install: ttymidi ttymidi.so
