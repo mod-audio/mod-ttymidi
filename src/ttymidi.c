@@ -460,7 +460,15 @@ static bool _ttymidi_init(bool exit_on_failure, jack_client_t* client)
          * Open JACK stuff
          */
 
-        open_client(&jackdata, client);
+        if (! open_client(&jackdata, client))
+        {
+                if (exit_on_failure)
+                {
+                        fprintf(stderr, "Error creating jack client.\n");
+                        exit(-1);
+                }
+                return false;
+        }
 
         /*
          *  Open modem device for reading and not as controlling tty because we don't
