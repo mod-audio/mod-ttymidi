@@ -349,7 +349,7 @@ void* write_midi_from_jack(void* ptr)
 
                 if (! run) break;
 
-                if (jack_ringbuffer_read(jackdata->ringbuffer_out, bufc, 4) == 4)
+                while (jack_ringbuffer_read(jackdata->ringbuffer_out, bufc, 4) == 4)
                 {
                         size = (size_t)bufc[0];
                         write(serial, bufc+1, size);
