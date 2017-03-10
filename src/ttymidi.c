@@ -79,8 +79,10 @@ typedef struct _jackdata
     jack_port_t* port_out;
     jack_ringbuffer_t* ringbuffer_in;
     jack_ringbuffer_t* ringbuffer_out;
+    jack_nframes_t bufsize_compensation;
     sem_t sem;
     bool internal;
+    volatile jack_nframes_t last_frame_time;
 } jackdata_t;
 
 void exit_cli(int sig)
@@ -174,17 +176,24 @@ static int process_client(jack_nframes_t frames, void* ptr)
 
         jackdata_t* jackdata = (jackdata_t*) ptr;
 
+        const jack_nframes_t cycle_start = jack_last_frame_time(jackdata->client);
+
         void* portbuf_in  = jack_port_get_buffer(jackdata->port_in,  frames);
         void* portbuf_out = jack_port_get_buffer(jackdata->port_out, frames);
 
         // MIDI from serial to JACK
         jack_midi_clear_buffer(portbuf_in);
 
-        char bufc[4];
+        char bufc[3 + sizeof(jack_nframes_t)];
         jack_midi_data_t bufj[3];
         size_t bsize;
-        while (jack_ringbuffer_read(jackdata->ringbuffer_in, bufc, 3) == 3)
+        jack_nframes_t buf_frame, offset, last_buf_frame = 0;
+
+        while (jack_ringbuffer_read(jackdata->ringbuffer_in, bufc,
+                                    3 + sizeof(jack_nframes_t)) == 3 + sizeof(jack_nframes_t))
         {
+            memcpy(&buf_frame, bufc+3, sizeof(jack_nframes_t));
+
             switch (bufc[0] & 0xF0)
             {
             case 0xC0:
@@ -199,14 +208,34 @@ static int process_client(jack_nframes_t frames, void* ptr)
             for (size_t i=0; i<bsize; ++i)
                 bufj[i] = bufc[i];
 
-            jack_midi_event_write(portbuf_in, 0, bufj, bsize);
+            buf_frame += frames - jackdata->bufsize_compensation;
+
+            if (last_buf_frame > buf_frame)
+                buf_frame = last_buf_frame;
+            else
+                last_buf_frame = buf_frame;
+
+            if (buf_frame >= cycle_start)
+            {
+                offset = buf_frame - cycle_start;
+
+                if (offset >= frames)
+                    offset = frames - 1;
+            }
+            else
+            {
+                offset = 0;
+            }
+
+            jack_midi_event_write(portbuf_in, offset, bufj, bsize);
         }
 
         // MIDI from JACK to serial
-        uint32_t event_count = jack_midi_get_event_count(portbuf_out);
+        const uint32_t event_count = jack_midi_get_event_count(portbuf_out);
 
         if (event_count > 0)
         {
+            bool needs_post = false;
             jack_midi_event_t event;
 
             for (uint32_t i=0; i<event_count; ++i)
@@ -228,10 +257,19 @@ static int process_client(jack_nframes_t frames, void* ptr)
 
                 // ready for ringbuffer
                 jack_ringbuffer_write(jackdata->ringbuffer_out, bufc, 4);
+
+                buf_frame = cycle_start + event.time;
+                jack_ringbuffer_write(jackdata->ringbuffer_out, (char*)&buf_frame, sizeof(jack_nframes_t));
+
+                needs_post = true;
             }
 
-            // Tell MIDI-out thread we have data
-            sem_post(&jackdata->sem);
+            if (needs_post)
+            {
+                // Tell MIDI-out thread we have data
+                jackdata->last_frame_time = cycle_start;
+                sem_post(&jackdata->sem);
+            }
         }
 
         return 0;
@@ -271,12 +309,12 @@ bool open_client(jackdata_t* jackdata, jack_client_t* client)
                 fprintf(stderr, "Error creating output port.\n");
         }
 
-        if ((ringbuffer_in = jack_ringbuffer_create(MAX_MSG_SIZE-1)) == NULL)
+        if ((ringbuffer_in = jack_ringbuffer_create(MAX_MSG_SIZE*2-1)) == NULL)
         {
                 fprintf(stderr, "Error creating JACK input ringbuffer.\n");
         }
 
-        if ((ringbuffer_out = jack_ringbuffer_create(MAX_MSG_SIZE-1)) == NULL)
+        if ((ringbuffer_out = jack_ringbuffer_create(MAX_MSG_SIZE*2-1)) == NULL)
         {
                 fprintf(stderr, "Error creating JACK output ringbuffer.\n");
         }
@@ -292,6 +330,7 @@ bool open_client(jackdata_t* jackdata, jack_client_t* client)
         jackdata->port_out = port_out;
         jackdata->ringbuffer_in = ringbuffer_in;
         jackdata->ringbuffer_out = ringbuffer_out;
+        jackdata->bufsize_compensation = (int)((double)jack_get_buffer_size(jackdata->client) / 10.0 + 0.5);
 
         jack_set_process_callback(client, process_client, jackdata);
 
@@ -340,7 +379,17 @@ void* write_midi_from_jack(void* ptr)
         jackdata_t* jackdata = (jackdata_t*) ptr;
 
         char bufc[4];
+        jack_nframes_t buf_frame, buf_diff, cycle_start;
         size_t size;
+
+        const jack_nframes_t sample_rate = jack_get_sample_rate(jackdata->client);
+
+        /* used for select sleep
+         * (compared to usleep which sleeps at *least* x us, select sleeps at *most*)
+         */
+        fd_set fd;
+        FD_ZERO(&fd);
+        struct timeval tv = { 0, 0 };
 
         while (run)
         {
@@ -349,8 +398,32 @@ void* write_midi_from_jack(void* ptr)
 
                 if (! run) break;
 
+                cycle_start = jackdata->last_frame_time;
+                buf_diff = 0;
+
                 while (jack_ringbuffer_read(jackdata->ringbuffer_out, bufc, 4) == 4)
                 {
+                        if (jack_ringbuffer_read(jackdata->ringbuffer_out, (char*)&buf_frame,
+                                                 sizeof(jack_nframes_t)) != sizeof(jack_nframes_t))
+                            continue;
+
+                        if (buf_frame > cycle_start)
+                        {
+                            buf_diff   = buf_frame - cycle_start - buf_diff;
+                            tv.tv_usec = (buf_diff * 1000000) / sample_rate;
+
+                            if (tv.tv_usec > 60 && tv.tv_usec < 10000 /* 10 ms */)
+                            {
+                                // assume write takes 50 us
+                                tv.tv_usec -= 50;
+                                select(0, &fd, NULL, NULL, &tv);
+                            }
+                        }
+                        else
+                        {
+                            buf_diff = 0;
+                        }
+
                         size = (size_t)bufc[0];
                         write(serial, bufc+1, size);
                 }
@@ -361,7 +434,8 @@ void* write_midi_from_jack(void* ptr)
 
 void* read_midi_from_serial_port(void* ptr)
 {
-        char buf[3], msg[MAX_MSG_SIZE];
+        char buf[3 + sizeof(jack_nframes_t)];
+        char msg[MAX_MSG_SIZE];
         int msglen;
 
         jackdata_t* jackdata = (jackdata_t*) ptr;
@@ -440,7 +514,9 @@ void* read_midi_from_serial_port(void* ptr)
 		/* parse MIDI message */
 		else
                 {
-                    jack_ringbuffer_write(jackdata->ringbuffer_in, buf, 3);
+                    const jack_nframes_t frames = jack_frame_time(jackdata->client);
+                    memcpy(buf+3, &frames, sizeof(jack_nframes_t));
+                    jack_ringbuffer_write(jackdata->ringbuffer_in, buf, 3 + sizeof(jack_nframes_t));
                 }
 	}
 
@@ -612,6 +688,7 @@ int jack_initialize(jack_client_t* client, const char* load_init)
 
         // MOD settings
         arguments.baudrate = B38400;
+        arguments.silent = true;
 
         if (load_init != NULL && load_init[0] != '\0')
             strncpy(arguments.serialdevice, load_init, MAX_DEV_STR_LEN);
