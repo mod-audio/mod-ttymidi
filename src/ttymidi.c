@@ -446,6 +446,8 @@ void* read_midi_from_serial_port(void* ptr)
 		while (buf[0] >> 7 == 0);
 	}
 
+	int prev_status = 0x00;
+
 	while (run)
 	{
 		/*
@@ -466,6 +468,7 @@ void* read_midi_from_serial_port(void* ptr)
 		 */
 
 		int i = 1;
+		int status = 0x00;
 
 		while (i < 3) {
 			read(serial, buf+i, 1);
@@ -473,6 +476,7 @@ void* read_midi_from_serial_port(void* ptr)
 			if (buf[i] >> 7 != 0) {
 				/* Status byte received and will always be first bit!*/
 				buf[0] = buf[i];
+				status = prev_status = buf[i] & 0xF0;
 				i = 1;
 			} else {
 				/* Data byte received */
@@ -480,11 +484,24 @@ void* read_midi_from_serial_port(void* ptr)
 					/* It was 2nd data byte so we have a MIDI event process! */
 					i = 3;
 				} else {
-					/* Lets figure out are we done or should we read one more byte. */
-					if ((buf[0] & 0xF0) == 0xC0 || (buf[0] & 0xF0) == 0xD0) {
+					switch (status)
+					{
+					case 0x00:
+						if (arguments.verbose) {
+							printf("ttymidi undefined status received, previous was %02X\n",
+							       prev_status);
+						}
+						i = 1;
+						break;
+					case 0xC0:
+					case 0xD0:
 						i = 3;
-					} else {
+						status = 0x00;
+						break;
+					default:
 						i = 2;
+						status = 0x00;
+						break;
 					}
 				}
 			}
@@ -511,13 +528,15 @@ void* read_midi_from_serial_port(void* ptr)
 			fflush(stdout);
 		}
 
+		/* TODO: sysex support */
+
 		/* parse MIDI message */
 		else
-                {
-                    const jack_nframes_t frames = jack_frame_time(jackdata->client);
-                    memcpy(buf+3, &frames, sizeof(jack_nframes_t));
-                    jack_ringbuffer_write(jackdata->ringbuffer_in, buf, 3 + sizeof(jack_nframes_t));
-                }
+		{
+			const jack_nframes_t frames = jack_frame_time(jackdata->client);
+			memcpy(buf+3, &frames, sizeof(jack_nframes_t));
+			jack_ringbuffer_write(jackdata->ringbuffer_in, buf, 3 + sizeof(jack_nframes_t));
+		}
 	}
 
 	return NULL;
@@ -608,12 +627,6 @@ static bool _ttymidi_init(bool exit_on_failure, jack_client_t* client)
         tcflush(serial, TCIFLUSH);
         tcsetattr(serial, TCSANOW, &newtio);
 
-        // Linux-specific: enable low latency mode (FTDI "nagling off")
-        struct serial_struct ser_info;
-        ioctl(serial, TIOCGSERIAL, &ser_info);
-        ser_info.flags |= ASYNC_LOW_LATENCY;
-        ioctl(serial, TIOCSSERIAL, &ser_info);
-
         if (arguments.printonly)
         {
                 printf("Super debug mode: Only printing the signal to screen. Nothing else.\n");
@@ -689,6 +702,7 @@ int jack_initialize(jack_client_t* client, const char* load_init)
         // MOD settings
         arguments.baudrate = B38400;
         arguments.silent = true;
+        arguments.verbose = false;
 
         if (load_init != NULL && load_init[0] != '\0')
             strncpy(arguments.serialdevice, load_init, MAX_DEV_STR_LEN);
