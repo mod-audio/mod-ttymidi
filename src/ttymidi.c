@@ -446,8 +446,6 @@ void* read_midi_from_serial_port(void* ptr)
 		while (buf[0] >> 7 == 0);
 	}
 
-	int prev_status = 0x00;
-
 	while (run)
 	{
 		/*
@@ -468,7 +466,6 @@ void* read_midi_from_serial_port(void* ptr)
 		 */
 
 		int i = 1;
-		int status = 0x00;
 
 		while (i < 3) {
 			read(serial, buf+i, 1);
@@ -476,7 +473,6 @@ void* read_midi_from_serial_port(void* ptr)
 			if (buf[i] >> 7 != 0) {
 				/* Status byte received and will always be first bit!*/
 				buf[0] = buf[i];
-				status = prev_status = buf[i] & 0xF0;
 				i = 1;
 			} else {
 				/* Data byte received */
@@ -484,23 +480,14 @@ void* read_midi_from_serial_port(void* ptr)
 					/* It was 2nd data byte so we have a MIDI event process! */
 					i = 3;
 				} else {
-					switch (status)
+					switch (buf[0] & 0xF0)
 					{
-					case 0x00:
-						if (arguments.verbose) {
-							printf("ttymidi undefined status received, previous was %02X\n",
-							       prev_status);
-						}
-						i = 1;
-						break;
 					case 0xC0:
 					case 0xD0:
 						i = 3;
-						status = 0x00;
 						break;
 					default:
 						i = 2;
-						status = 0x00;
 						break;
 					}
 				}
