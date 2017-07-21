@@ -29,6 +29,7 @@
 #include <jack/intclient.h>
 #include <jack/midiport.h>
 #include <jack/ringbuffer.h>
+#include <linux/serial.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <asm/termios.h>
@@ -605,6 +606,12 @@ static bool _ttymidi_init(bool exit_on_failure, jack_client_t* client)
          * now activate the settings for the port
          */
         ioctl(serial, TCSETS2, &newtio);
+
+        // Linux-specific: enable low latency mode (FTDI "nagling off")
+        struct serial_struct ser_info;
+        ioctl(serial, TIOCGSERIAL, &ser_info);
+        ser_info.flags |= ASYNC_LOW_LATENCY;
+        ioctl(serial, TIOCSSERIAL, &ser_info);
 
         if (arguments.printonly)
         {
