@@ -15,34 +15,31 @@
     along with ttymidi.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#define TTYMIDI_USE_FUTEX
-
 #include <stdbool.h>
 #include <stdlib.h>
-#include <string.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <termios.h>
 #include <stdio.h>
+#include <string.h>
+#include <fcntl.h>
 #include <argp.h>
+#include <errno.h>
+#include <signal.h>
+#include <pthread.h>
+#include <unistd.h>
 #include <jack/jack.h>
 #include <jack/intclient.h>
 #include <jack/midiport.h>
 #include <jack/ringbuffer.h>
-#include <signal.h>
-#include <pthread.h>
-#include <unistd.h>
-// Linux-specific
-#include <linux/serial.h>
-#include <linux/ioctl.h>
-#include <sys/ioctl.h>
-#include <asm/ioctls.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <asm/termios.h>
 // MOD specific
 #include "mod-semaphore.h"
 
 #define MAX_DEV_STR_LEN               32
 #define MAX_MSG_SIZE                1024
+
+/* import ioctl definition here, as we can't include both "sys/ioctl.h" and "asm/termios.h" */
+extern int ioctl (int __fd, unsigned long int __request, ...) __THROW;
 
 /* --------------------------------------------------------------------- */
 // Globals
@@ -56,7 +53,7 @@ int serial;
 static struct argp_option options[] =
 {
 	{"serialdevice" , 's', "DEV" , 0, "Serial device to use. Default = /dev/ttyUSB0", 0 },
-	{"baudrate"     , 'b', "BAUD", 0, "Serial port baud rate. Default = 115200", 0 },
+	{"baudrate"     , 'b', "BAUD", 0, "Serial port baud rate. Default = 31250", 0 },
 	{"verbose"      , 'v', 0     , 0, "For debugging: Produce verbose output", 0 },
 	{"printonly"    , 'p', 0     , 0, "Super debugging: Print values read from serial -- and do nothing else", 0 },
 	{"quiet"        , 'q', 0     , 0, "Don't produce any output, even when the print command is sent", 0 },
@@ -122,21 +119,15 @@ static error_t parse_opt (int key, char *arg, struct argp_state *state)
 			break;
 		case 'b':
 			if (arg == NULL) break;
+			errno = 0;
 			baud_temp = strtol(arg, NULL, 0);
-			if (baud_temp != EINVAL && baud_temp != ERANGE)
-				switch (baud_temp)
-				{
-					case 1200   : arguments->baudrate = B1200  ; break;
-					case 2400   : arguments->baudrate = B2400  ; break;
-					case 4800   : arguments->baudrate = B4800  ; break;
-					case 9600   : arguments->baudrate = B9600  ; break;
-					case 19200  : arguments->baudrate = B19200 ; break;
-					case 38400  : arguments->baudrate = B38400 ; break;
-					case 57600  : arguments->baudrate = B57600 ; break;
-					case 115200 : arguments->baudrate = B115200; break;
-					default: printf("Baud rate %i is not supported.\n",baud_temp); exit(1);
-				}
-
+			if (errno == EINVAL || errno == ERANGE)
+			{
+				printf("Baud rate %s is invalid.\n",arg);
+				exit(1);
+			}
+			arguments->baudrate = baud_temp;
+			break;
 		case ARGP_KEY_ARG:
 		case ARGP_KEY_END:
 			break;
@@ -154,7 +145,7 @@ void arg_set_defaults(arguments_t *arguments)
 	arguments->printonly    = 0;
 	arguments->silent       = 0;
 	arguments->verbose      = 0;
-	arguments->baudrate     = B115200;
+	arguments->baudrate     = 31250;
 	char *name_tmp		= (char *)"ttymidi";
 	strncpy(arguments->serialdevice, serialdevice_temp, MAX_DEV_STR_LEN);
 	strncpy(arguments->name, name_tmp, MAX_DEV_STR_LEN);
@@ -532,7 +523,7 @@ void* read_midi_from_serial_port(void* ptr)
 /* --------------------------------------------------------------------- */
 // Main program
 
-struct termios oldtio, newtio;
+struct termios2 oldtio, newtio;
 jackdata_t jackdata;
 pthread_t midi_out_thread;
 
@@ -570,26 +561,24 @@ static bool _ttymidi_init(bool exit_on_failure, jack_client_t* client)
         }
 
         /* save current serial port settings */
-        tcgetattr(serial, &oldtio);
+        ioctl(serial, TCGETS2, &oldtio);
 
         /* clear struct for new port settings */
         bzero(&newtio, sizeof(newtio));
 
         /*
-         * BAUDRATE : Set bps rate. You could also use cfsetispeed and cfsetospeed.
-         * CRTSCTS  : output hardware flow control (only used if the cable has
-         * all necessary lines. See sect. 7 of Serial-HOWTO)
-         * CS8      : 8n1 (8bit, no parity, 1 stopbit)
-         * CLOCAL   : local connection, no modem contol
-         * CREAD    : enable receiving characters
+         * CRTSCTS : output hardware flow control (only used if the cable has
+         *            all necessary lines. See sect. 7 of Serial-HOWTO)
+         * CS8     : 8n1 (8bit, no parity, 1 stopbit)
+         * CLOCAL  : local connection, no modem contol
+         * CREAD   : enable receiving characters
          */
-        newtio.c_cflag = arguments.baudrate | CS8 | CLOCAL | CREAD; // CRTSCTS removed
+        newtio.c_cflag = BOTHER | CS8 | CLOCAL | CREAD; // CRTSCTS removed
 
         /*
-         * IGNPAR  : ignore bytes with parity errors
-         * ICRNL   : map CR to NL (otherwise a CR input on the other computer
-         * will not terminate input)
-         * otherwise make device raw (no other input processing)
+         * IGNPAR : ignore bytes with parity errors
+         * ICRNL  : map CR to NL (otherwise a CR input on the other computer will not terminate input)
+         *           otherwise make device raw (no other input processing)
          */
         newtio.c_iflag = IGNPAR;
 
@@ -597,10 +586,14 @@ static bool _ttymidi_init(bool exit_on_failure, jack_client_t* client)
         newtio.c_oflag = 0;
 
         /*
-         * ICANON  : enable canonical input
+         * ICANON : enable canonical input
          * disable all echo functionality, and don't send signals to calling program
          */
         newtio.c_lflag = 0; // non-canonical
+
+        /* Speed */
+        newtio.c_ispeed = arguments.baudrate;
+        newtio.c_ospeed = arguments.baudrate;
 
         /*
          * set up: we'll be reading 4 bytes at a time.
@@ -609,10 +602,9 @@ static bool _ttymidi_init(bool exit_on_failure, jack_client_t* client)
         newtio.c_cc[VMIN]  = 1;     /* blocking read until n character arrives */
 
         /*
-         * now clean the modem line and activate the settings for the port
+         * now activate the settings for the port
          */
-        tcflush(serial, TCIFLUSH);
-        tcsetattr(serial, TCSANOW, &newtio);
+        ioctl(serial, TCSETS2, &newtio);
 
         if (arguments.printonly)
         {
@@ -658,7 +650,7 @@ void _ttymidi_finish(void)
         pthread_join(midi_out_thread, NULL);
 
         /* restore the old port settings */
-        tcsetattr(serial, TCSANOW, &oldtio);
+        ioctl(serial, TCSETS2, &oldtio);
         printf("\ndone!\n");
 }
 
@@ -686,10 +678,9 @@ int jack_initialize(jack_client_t* client, const char* load_init)
 {
         arg_set_defaults(&arguments);
 
-        // MOD settings
-        arguments.baudrate = B38400;
-        arguments.silent = true;
-        arguments.verbose = false;
+        // Disable logs for internal client
+        arguments.silent = 1;
+        arguments.verbose = 0;
 
         if (load_init != NULL && load_init[0] != '\0')
             strncpy(arguments.serialdevice, load_init, MAX_DEV_STR_LEN);
