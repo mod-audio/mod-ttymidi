@@ -33,6 +33,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <asm/termios.h>
+#include <assert.h>
 // MOD specific
 #include "mod-semaphore.h"
 
@@ -176,26 +177,34 @@ static int process_client(jack_nframes_t frames, void* ptr)
         // MIDI from serial to JACK
         jack_midi_clear_buffer(portbuf_in);
 
-        char bufc[3 + sizeof(jack_nframes_t)];
+	const size_t BUFFERSIZE = 3 + sizeof(size_t) + sizeof(jack_nframes_t);
+        char bufc[BUFFERSIZE];
         jack_midi_data_t bufj[3];
         size_t bsize;
         jack_nframes_t buf_frame, offset, last_buf_frame = 0;
 
-        while (jack_ringbuffer_read(jackdata->ringbuffer_in, bufc,
-                                    3 + sizeof(jack_nframes_t)) == 3 + sizeof(jack_nframes_t))
+        while (jack_ringbuffer_read(jackdata->ringbuffer_in, bufc, BUFFERSIZE) ==
+	       BUFFERSIZE)
         {
-            memcpy(&buf_frame, bufc+3, sizeof(jack_nframes_t));
+	  // Format: data, data_size, frame
+	  
+	  memcpy(&bsize, bufc+3, sizeof(size_t));
+	  //size = bufc
+	  printf("bsize %lx", bsize);
+	  fflush(stdout);
 
-            switch (bufc[0] & 0xF0)
-            {
-            case 0xC0:
-            case 0xD0:
-                bsize = 2;
-                break;
-            default:
-                bsize = 3;
-                break;
-            }
+	  memcpy(&buf_frame, bufc+3+sizeof(size_t), sizeof(jack_nframes_t));
+            /* switch (bufc[0] & 0xF0) */
+            /* { */
+            /* case 0xC0: */
+            /* case 0xD0: */
+            /*     bsize = 2; */
+            /*     break; */
+            /* default: */
+            /*     bsize = 3; */
+            /*     break; */
+            /* } */
+	    
 
             for (size_t i=0; i<bsize; ++i)
                 bufj[i] = bufc[i];
@@ -366,6 +375,7 @@ void close_client(jackdata_t* jackdata)
 /* --------------------------------------------------------------------- */
 // MIDI stuff
 
+
 void* write_midi_from_jack(void* ptr)
 {
         jackdata_t* jackdata = (jackdata_t*) ptr;
@@ -426,100 +436,242 @@ void* write_midi_from_jack(void* ptr)
 
 void* read_midi_from_serial_port(void* ptr)
 {
-        char buf[3 + sizeof(jack_nframes_t)];
-        char msg[MAX_MSG_SIZE];
-        int msglen;
+  jack_midi_data_t buffer[3 + sizeof(size_t) + sizeof(jack_nframes_t)];
+  
+  //char buf[3 + sizeof(jack_nframes_t)];
+  //char msg[MAX_MSG_SIZE];
+  //int msglen;
+  
+  jackdata_t* jackdata = (jackdata_t*) ptr;
 
-        jackdata_t* jackdata = (jackdata_t*) ptr;
+  /*
+   * Super-debug mode:
+   *
+   * Print to screen whatever comes through the serial port. Send
+   * nothing into the MIDI-event queue.
+   */
+  if (arguments.printonly) {
+    while (run) {
+      read(serial, buffer, 1);
+      printf("%x\t", (int) buffer[0] & 0xFF);
+      fflush(stdout);
+    }
+  } else {
 
-	/* Lets first fast forward to first status byte... */
-	if (!arguments.printonly) {
-		do read(serial, buf, 1);
-		while (buf[0] >> 7 == 0);
+    size_t read_cnt = 0;
+    size_t data_bytes_cnt = 0;
+    
+    while (run) {
+      // Read a byte and go ahead iff it is a valid status byte.
+      read_cnt = read(serial, buffer, 1);
+      assert(read_cnt == 1);
+
+      //printf("byte %x\n", (int) buffer[0]);
+      if ((buffer[0] & 0x80) == 0x80) {
+	
+	//puts("status byte");
+	//fflush(stdout);
+	
+	if (((int) buffer[0]) < 0xF0) {
+	  // Channel Voice or Mode Message ahead
+
+	  // Program Change and Channel Pressure only have 1 data byte
+	  // following!
+	  switch(buffer[0] & 0xF0) {
+	  case 0xC0: // Program Change
+	  case 0xD0: // Channel Pressure
+	    data_bytes_cnt = 1;
+
+	    puts("2 BYTES");
+	    fflush(stdout);
+
+	    break;
+	  default:
+	    data_bytes_cnt = 2;
+	    
+	    puts("3 BYTES");
+	    fflush(stdout);
+
+	    break;
+	  }
+	  
+	  read_cnt = read(serial, buffer+1, data_bytes_cnt);
+	  //assert(read_cnt == data_bytes_cnt);
+	  // Whole payload in the buffer, ready to forward
+	  
+	} else {
+	  // System Common Message ahead
+
+	  // Compare https://www.midi.org/specifications-old/item/table-1-summary-of-midi-message
+	  switch(buffer[0] & 0xFF) {
+	  case 0xF0:
+	    // System exclusive begin
+
+	    // Unknown data byte count. Note that Real-Time messages
+	    // may be interleaved with a System Exclusive!
+	    // Every SysEx byte until 0xF7 should start with a 0-bit, so skipping is safe.
+	    continue;
+	    break;
+	  case 0xF7:
+	    // System exclusive end
+	    continue;
+	    break;
+
+	  case 0xF2:
+	    // Song Position Pointer
+	    data_bytes_cnt = 2;
+	    puts("3 BYTES");
+	    fflush(stdout);
+	    break;
+
+	  case 0xF1:
+	    // MIDI Time Code Quarter Frame
+	  case 0xF3:
+	    // Song Select
+	    data_bytes_cnt = 1;
+
+	    puts("2 BYTES");
+	    fflush(stdout);
+	    break;
+	    
+	  default:
+	    //case 0xF8: // Clock
+	    //case 0xFA: // Start
+	    //case 0xFB: // Continue
+	    //case 0xFC: // Stop
+	    puts("SINGLE BYTE");
+	    fflush(stdout);
+	    
+	    data_bytes_cnt = 0;
+	    break;
+	  }
 	}
 
-	while (run)
-	{
-		/*
-		 * super-debug mode: only print to screen whatever
-		 * comes through the serial port.
-		 */
-
-		if (arguments.printonly)
-		{
-			read(serial, buf, 1);
-			printf("%x\t", (int) buf[0]&0xFF);
-			fflush(stdout);
-			continue;
-		}
-
-		/*
-		 * so let's align to the beginning of a midi command.
-		 */
-
-		int i = 1;
-
-		while (i < 3) {
-			read(serial, buf+i, 1);
-
-			if (buf[i] >> 7 != 0) {
-				/* Status byte received and will always be first bit!*/
-				buf[0] = buf[i];
-				i = 1;
-			} else {
-				/* Data byte received */
-				if (i == 2) {
-					/* It was 2nd data byte so we have a MIDI event process! */
-					i = 3;
-				} else {
-					switch (buf[0] & 0xF0)
-					{
-					case 0xC0:
-					case 0xD0:
-						i = 3;
-						break;
-					default:
-						i = 2;
-						break;
-					}
-				}
-			}
-
-		}
-
-		/* print comment message (the ones that start with 0xFF 0x00 0x00 */
-		if (buf[0] == (char) 0xFF && buf[1] == (char) 0x00 && buf[2] == (char) 0x00)
-		{
-			read(serial, buf, 1);
-			msglen = buf[0];
-			if (msglen > MAX_MSG_SIZE-1) msglen = MAX_MSG_SIZE-1;
-
-			read(serial, msg, msglen);
-
-			if (arguments.silent) continue;
-
-			/* make sure the string ends with a null character */
-			msg[msglen] = 0;
-
-			puts("0xFF Non-MIDI message: ");
-			puts(msg);
-			putchar('\n');
-			fflush(stdout);
-		}
-
-		/* TODO: sysex support */
-
-		/* parse MIDI message */
-		else
-		{
-			const jack_nframes_t frames = jack_frame_time(jackdata->client);
-			memcpy(buf+3, &frames, sizeof(jack_nframes_t));
-			jack_ringbuffer_write(jackdata->ringbuffer_in, buf, 3 + sizeof(jack_nframes_t));
-		}
-	}
-
-	return NULL;
+	// Forward the event in the queue.
+	
+	// Copy the buffer: The first 3 bytes are filled
+	
+	// Add how many buffer bytes are used
+	const size_t used = data_bytes_cnt + 1;
+	memcpy(buffer+3, &used, sizeof(size_t));
+	
+	// Add a timestamp
+	const jack_nframes_t frames = jack_frame_time(jackdata->client);
+	memcpy(buffer+3+sizeof(size_t), &frames, sizeof(jack_nframes_t));
+	
+	jack_ringbuffer_write(jackdata->ringbuffer_in, (const char *) buffer,
+			      sizeof(buffer));
+	
+	puts("Written");
+	fflush(stdout);
+	
+      } else {
+	// Unexpected data byte. Eat it.
+	puts("unexpected");
+	fflush(stdout);
+      }
+    }    
+  }
+  return NULL;
 }
+
+
+/* void* read_midi_from_serial_port(void* ptr) */
+/* { */
+/*         char buf[3 + sizeof(jack_nframes_t)]; */
+/*         char msg[MAX_MSG_SIZE]; */
+/*         int msglen; */
+
+/*         jackdata_t* jackdata = (jackdata_t*) ptr; */
+
+/* 	/\* Lets first fast forward to first status byte... *\/ */
+/* 	if (!arguments.printonly) { */
+/* 		do read(serial, buf, 1); */
+/* 		while (buf[0] >> 7 == 0); */
+/* 	} */
+
+/* 	while (run) */
+/* 	{ */
+/* 		/\* */
+/* 		 * super-debug mode: only print to screen whatever */
+/* 		 * comes through the serial port. */
+/* 		 *\/ */
+
+/* 		if (arguments.printonly) */
+/* 		{ */
+/* 			read(serial, buf, 1); */
+/* 			printf("%x\t", (int) buf[0]&0xFF); */
+/* 			fflush(stdout); */
+/* 			continue; */
+/* 		} */
+
+/* 		/\* */
+/* 		 * so let's align to the beginning of a midi command. */
+/* 		 *\/ */
+
+/* 		int i = 1; */
+
+/* 		while (i < 3) { */
+/* 			read(serial, buf+i, 1); */
+
+/* 			if (buf[i] >> 7 != 0) { */
+/* 				/\* Status byte received and will always be first bit!*\/ */
+/* 				buf[0] = buf[i]; */
+/* 				i = 1; */
+/* 			} else { */
+/* 				/\* Data byte received *\/ */
+/* 				if (i == 2) { */
+/* 					/\* It was 2nd data byte so we have a MIDI event process! *\/ */
+/* 					i = 3; */
+/* 				} else { */
+/* 					switch (buf[0] & 0xF0) */
+/* 					{ */
+/* 					case 0xC0: */
+/* 					case 0xD0: */
+/* 						i = 3; */
+/* 						break; */
+/* 					default: */
+/* 						i = 2; */
+/* 						break; */
+/* 					} */
+/* 				} */
+/* 			} */
+
+/* 		} */
+
+/* 		/\* print comment message (the ones that start with 0xFF 0x00 0x00 *\/ */
+/* 		if (buf[0] == (char) 0xFF && buf[1] == (char) 0x00 && buf[2] == (char) 0x00) */
+/* 		{ */
+/* 			read(serial, buf, 1); */
+/* 			msglen = buf[0]; */
+/* 			if (msglen > MAX_MSG_SIZE-1) msglen = MAX_MSG_SIZE-1; */
+
+/* 			read(serial, msg, msglen); */
+
+/* 			if (arguments.silent) continue; */
+
+/* 			/\* make sure the string ends with a null character *\/ */
+/* 			msg[msglen] = 0; */
+
+/* 			puts("0xFF Non-MIDI message: "); */
+/* 			puts(msg); */
+/* 			putchar('\n'); */
+/* 			fflush(stdout); */
+/* 		} */
+
+/* 		/\* TODO: sysex support *\/ */
+
+/* 		/\* parse MIDI message *\/ */
+/* 		else */
+/* 		{ */
+/* 			const jack_nframes_t frames = jack_frame_time(jackdata->client); */
+/* 			memcpy(buf+3, &frames, sizeof(jack_nframes_t)); */
+/* 			jack_ringbuffer_write(jackdata->ringbuffer_in, buf, 3 + sizeof(jack_nframes_t)); */
+/* 		} */
+/* 	} */
+
+/* 	return NULL; */
+/* } */
 
 /* --------------------------------------------------------------------- */
 // Main program
