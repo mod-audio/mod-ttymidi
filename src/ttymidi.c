@@ -162,7 +162,7 @@ arguments_t arguments;
 /* --------------------------------------------------------------------- */
 // JACK stuff
 
-const uint8_t ringbuffer_msg_size = 3 + sizeof(size_t) + sizeof(jack_nframes_t);
+const uint8_t ringbuffer_msg_size = 3 + sizeof(uint8_t) + sizeof(jack_nframes_t);
 
 static int process_client(jack_nframes_t frames, void* ptr)
 {
@@ -181,16 +181,16 @@ static int process_client(jack_nframes_t frames, void* ptr)
 
         char bufc[ringbuffer_msg_size];
         jack_midi_data_t bufj[3];
-        size_t bsize;
+        uint8_t bsize;
         jack_nframes_t buf_frame, offset, last_buf_frame = 0;
 
         while (jack_ringbuffer_read(jackdata->ringbuffer_in, bufc, ringbuffer_msg_size) == ringbuffer_msg_size)
         {
             // Format: [data, data_size, frame]
-            memcpy(&bsize, bufc+3, sizeof(size_t));
-            memcpy(&buf_frame, bufc+3+sizeof(size_t), sizeof(jack_nframes_t));
+            memcpy(&bsize, bufc+3, sizeof(uint8_t));
+            memcpy(&buf_frame, bufc+3+sizeof(uint8_t), sizeof(jack_nframes_t));
 
-            for (size_t i=0; i<bsize; ++i)
+            for (uint8_t i=0; i<bsize; ++i)
                 bufj[i] = bufc[i];
 
             buf_frame += frames - jackdata->bufsize_compensation;
@@ -234,7 +234,7 @@ static int process_client(jack_nframes_t frames, void* ptr)
                 bufc[0] = event.size;
 
                 // copy the rest
-                size_t j=0;
+                uint8_t j=0;
                 for (; j<event.size; ++j)
                     bufc[j+1] = event.buffer[j];
                 for (; j<3; ++j)
@@ -366,7 +366,7 @@ void* write_midi_from_jack(void* ptr)
 
         char bufc[4];
         jack_nframes_t buf_frame, buf_diff, cycle_start;
-        size_t size;
+        uint8_t size;
 
         const jack_nframes_t sample_rate = jack_get_sample_rate(jackdata->client);
 
@@ -410,7 +410,7 @@ void* write_midi_from_jack(void* ptr)
                             buf_diff = 0;
                         }
 
-                        size = (size_t)bufc[0];
+                        size = (uint8_t)bufc[0];
                         write(serial, bufc+1, size);
                 }
         }
@@ -443,7 +443,7 @@ void* read_midi_from_serial_port(void* ptr)
   } else {
 
     size_t read_cnt = 0;
-    size_t data_bytes_cnt = 0;
+    uint8_t data_bytes_cnt = 0;
     
     while (run) {
       // Read a byte and go ahead iff it is a valid status byte.
@@ -462,11 +462,11 @@ void* read_midi_from_serial_port(void* ptr)
 	    data_bytes_cnt = 1;
 	    break;
 	  default:
-	    data_bytes_cnt = 2;	    
+	    data_bytes_cnt = 2;
 	    break;
 	  }
 	  
-	  read(serial, buffer+1, data_bytes_cnt);	  
+	  read(serial, buffer+1, data_bytes_cnt);
 	  // Whole payload in the buffer, ready to forward
 	  
 	} else {
@@ -515,12 +515,12 @@ void* read_midi_from_serial_port(void* ptr)
 	// Copy the buffer: The first 3 bytes are filled
 	
 	// Add how many buffer bytes are used
-	const size_t used = data_bytes_cnt + 1;
-	memcpy(buffer+3, &used, sizeof(size_t));
+	const uint8_t used = data_bytes_cnt + 1;
+	memcpy(buffer+3, &used, sizeof(uint8_t));
 	
 	// Add a timestamp
 	const jack_nframes_t frames = jack_frame_time(jackdata->client);
-	memcpy(buffer+3+sizeof(size_t), &frames, sizeof(jack_nframes_t));
+	memcpy(buffer+3+sizeof(uint8_t), &frames, sizeof(jack_nframes_t));
 	
 	jack_ringbuffer_write(jackdata->ringbuffer_in, (const char *) buffer, ringbuffer_msg_size);
       } else {
