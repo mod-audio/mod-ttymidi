@@ -420,12 +420,8 @@ void* write_midi_from_jack(void* ptr)
 
 void* read_midi_from_serial_port(void* ptr)
 {
-  jack_midi_data_t buffer[3 + sizeof(size_t) + sizeof(jack_nframes_t)];
-  
-  //char buf[3 + sizeof(jack_nframes_t)];
-  //char msg[MAX_MSG_SIZE];
-  //int msglen;
-  
+  const size_t buffer_size = 3 + sizeof(size_t) + sizeof(jack_nframes_t);
+  jack_midi_data_t buffer[buffer_size];  
   jackdata_t* jackdata = (jackdata_t*) ptr;
 
   /*
@@ -446,11 +442,22 @@ void* read_midi_from_serial_port(void* ptr)
     size_t data_bytes_cnt = 0;
     
     while (run) {
+      // Clean the buffer
+      for (unsigned int i; i < buffer_size; ++i) {
+	buffer[i] = 0x00;
+      }
+      
       // Read a byte and go ahead iff it is a valid status byte.
       read_cnt = read(serial, buffer, 1);
-      if (read_cnt != 1) continue;
+      if (read_cnt != 1) {
+	// Nothing to read. Try again in the next loop.
+	continue;
+      }
 
+      // Check if the first bit is set
       if ((buffer[0] & 0x80) == 0x80) {
+	// This is a MIDI message. No SysEx data.
+	
 	if (((int) buffer[0]) < 0xF0) {
 	  // Channel Voice or Mode Message ahead
 
@@ -473,20 +480,22 @@ void* read_midi_from_serial_port(void* ptr)
 	  // System Common Message ahead
 
 	  // Compare https://www.midi.org/specifications-old/item/table-1-summary-of-midi-message
-	  switch(buffer[0] & 0xFF) {
+	  switch(buffer[0]) {
 	  case 0xF0:
 	    // System exclusive begin
 
 	    // Unknown data byte count. Note that Real-Time messages
 	    // may be interleaved with a System Exclusive!
+	    
 	    // Every SysEx byte until 0xF7 should start with a 0-bit, so skipping is safe.
 	    continue;
 	    break;
+	    
 	  case 0xF7:
 	    // System exclusive end
 	    continue;
 	    break;
-
+	    
 	  case 0xF2:
 	    // Song Position Pointer
 	    data_bytes_cnt = 2;
@@ -504,7 +513,9 @@ void* read_midi_from_serial_port(void* ptr)
 	    //case 0xF8: // Clock
 	    //case 0xFA: // Start
 	    //case 0xFB: // Continue
-	    //case 0xFC: // Stop	    
+	    //case 0xFC: // Stop
+
+	    // but also Tune Request and Reserved	    
 	    data_bytes_cnt = 0;
 	    break;
 	  }
@@ -521,11 +532,21 @@ void* read_midi_from_serial_port(void* ptr)
 	// Add a timestamp
 	const jack_nframes_t frames = jack_frame_time(jackdata->client);
 	memcpy(buffer+3+sizeof(size_t), &frames, sizeof(jack_nframes_t));
-	
-	jack_ringbuffer_write(jackdata->ringbuffer_in, (const char *) buffer,
-			      sizeof(buffer));	
+
+	// Sanity check
+	if (
+	    (buffer[0] & 0x80) &&
+	    !(buffer[1] & 0x80) &&
+	    !(buffer[2] & 0x80)
+	    ) {
+	  jack_ringbuffer_write(jackdata->ringbuffer_in, (const char *) buffer,
+				sizeof(buffer));
+	} else {
+	  // Bad bytes. Discard.
+	}
       } else {
-	// Unexpected data byte. Eat it.
+	// (buffer[0] & 0x80) != 0x80
+	// Unexpected SysEx data byte. Discard it.
       }
     }    
   }
