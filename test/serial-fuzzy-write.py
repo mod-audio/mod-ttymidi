@@ -2,11 +2,12 @@
 
 import serial
 import random
+import time
 
 #random.randint(0, 255)
 
-s = serial.Serial('/dev/pts/6', 31250, timeout=0.1)
-
+# Testing with `socat`
+s = serial.Serial('/dev/pts/4', 31250, timeout=0.1)
 
 # noteon = b'\x80\x18\x00'
 # noteoff = b'\x90\x18\x64'
@@ -110,7 +111,6 @@ reset = bytes([
     int('11111111', 2)
 ])
 
-
 s.write(noteon)
 s.write(noteoff)
 s.write(poly)
@@ -121,8 +121,6 @@ s.write(channelpressure)
 s.write(pitchbend)
 s.write(channelmodemessage)
 
-#s.write(sysex_begin)
-#s.write(sysex_end)
 s.write(timecode_quarter_frame)
 s.write(song_position_pointer)
 s.write(song_select)
@@ -135,15 +133,26 @@ s.write(active_sensing)
 
 s.write(reset)
 
+s.write(sysex_begin)
+s.write(sysex_end)
 
 # #msg = [90,18,64,80,18,0]
 # #s.write(bytes(msg))
 
 # #(4).to_bytes(1 ,byteorder='big')
 
+events = [
+    int('11110111', 2),
+    int('11110110', 2),
+    int('11110000', 2)
+]
+
+sleeptime = 32/48000
 for k in range(1, 100000000):
-    values = random.sample(list(range(0, 256)), 3)
-    for v in values:
-        #print(bytes(v))
-        print(v.to_bytes(1, byteorder='big'))
-        s.write(bytes(v))
+    values = random.sample(list(range(0, 256)), 1)
+    
+    time.sleep(sleeptime)
+    print("{0}, {1}".format(bytes(values), sleeptime))
+    s.write(bytes(values))
+    if sleeptime > 2/48000:
+        sleeptime /= 2
