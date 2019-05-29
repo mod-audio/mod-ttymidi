@@ -446,11 +446,20 @@ void* read_midi_from_serial_port(void* ptr)
     uint8_t data_bytes_cnt = 0;
     
     while (run) {
+      // Clean the buffer
+      memset(buffer, 0, ringbuffer_msg_size);
+      
       // Read a byte and go ahead iff it is a valid status byte.
       read_cnt = read(serial, buffer, 1);
-      if (read_cnt != 1) continue;
+      if (read_cnt != 1) {
+	// Nothing to read. Try again in the next loop.
+	continue;
+      }
 
+      // Check if the first bit is set...
       if ((buffer[0] & 0x80) == 0x80) {
+	// ...then is a MIDI message. No SysEx data.
+	
 	if (((int) buffer[0]) < 0xF0) {
 	  // Channel Voice or Mode Message ahead
 
@@ -473,7 +482,7 @@ void* read_midi_from_serial_port(void* ptr)
 	  // System Common Message ahead
 
 	  // Compare https://www.midi.org/specifications-old/item/table-1-summary-of-midi-message
-	  switch(buffer[0] & 0xFF) {
+	  switch(buffer[0]) {
 	  case 0xF0:
 	    // System exclusive begin
 
@@ -505,6 +514,7 @@ void* read_midi_from_serial_port(void* ptr)
 	    //case 0xFA: // Start
 	    //case 0xFB: // Continue
 	    //case 0xFC: // Stop
+	    // but also Tune Request and Reserved
 	    data_bytes_cnt = 0;
 	    break;
 	  }
@@ -521,10 +531,20 @@ void* read_midi_from_serial_port(void* ptr)
 	// Add a timestamp
 	const jack_nframes_t frames = jack_frame_time(jackdata->client);
 	memcpy(buffer+3+sizeof(uint8_t), &frames, sizeof(jack_nframes_t));
-	
-	jack_ringbuffer_write(jackdata->ringbuffer_in, (const char *) buffer, ringbuffer_msg_size);
+
+	// Sanity check
+	if (
+	    (buffer[0] & 0x80) &&
+	    !(buffer[1] & 0x80) &&
+	    !(buffer[2] & 0x80)
+	    ) {
+	  jack_ringbuffer_write(jackdata->ringbuffer_in, (const char *) buffer,
+				ringbuffer_msg_size);
+	} else {
+	  // Bad bytes. Discard the event.
+	}
       } else {
-	// Unexpected data byte. Eat it.
+	// Unexpected data byte. Discard it.
       }
     }    
   }
