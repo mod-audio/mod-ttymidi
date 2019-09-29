@@ -458,101 +458,96 @@ void* read_midi_from_serial_port(void* ptr)
       // Read a byte and go ahead iff it is a valid status byte.
       read_cnt = read(serial, buffer, 1);
       if (read_cnt != 1) {
-	// Nothing to read. Try again in the next loop.
-	continue;
+        // Nothing to read. Try again in the next loop.
+        continue;
       }
 
       // Check if the first bit is set...
       if ((buffer[0] & 0x80) == 0x80) {
-	// ...then is a MIDI message. No SysEx data.
-	
-	if (((int) buffer[0]) < 0xF0) {
-	  // Channel Voice or Mode Message ahead
+        // ...then is a MIDI message. No SysEx data.
 
-	  // Program Change and Channel Pressure only have 1 data byte
-	  // following!
-	  switch(buffer[0] & 0xF0) {
-	  case 0xC0: // Program Change
-	  case 0xD0: // Channel Pressure
-	    data_bytes_cnt = 1;
-	    break;
-	  default:
-	    data_bytes_cnt = 2;
-	    break;
-	  }
-	  
-	  read(serial, buffer+1, data_bytes_cnt);
-	  // Whole payload in the buffer, ready to forward
-	  
-	} else {
-	  // System Common Message ahead
+        if (((int) buffer[0]) < 0xF0) {
+          // Channel Voice or Mode Message ahead
 
-	  // Compare https://www.midi.org/specifications-old/item/table-1-summary-of-midi-message
-	  switch(buffer[0]) {
-	  case 0xF0:
-	    // System exclusive begin
+          // Program Change and Channel Pressure only have 1 data byte
+          // following!
+          switch(buffer[0] & 0xF0) {
+          case 0xC0: // Program Change
+          case 0xD0: // Channel Pressure
+            data_bytes_cnt = 1;
+            break;
+          default:
+            data_bytes_cnt = 2;
+            break;
+          }
 
-	    // Unknown data byte count. Note that Real-Time messages
-	    // may be interleaved with a System Exclusive!
-	    // Every SysEx byte until 0xF7 should start with a 0-bit, so skipping is safe.
-	    continue;
-	    break;
-	  case 0xF7:
-	    // System exclusive end
-	    continue;
-	    break;
+          read(serial, buffer+1, data_bytes_cnt);
+          // Whole payload in the buffer, ready to forward
 
-	  case 0xF2:
-	    // Song Position Pointer
-	    data_bytes_cnt = 2;
-	    break;
+        } else {
+          // System Common Message ahead
 
-	  case 0xF1:
-	    // MIDI Time Code Quarter Frame
-	  case 0xF3:
-	    // Song Select
-	    data_bytes_cnt = 1;
-	    break;
-	    
-	  default:
-	    // Especially these:
-	    //case 0xF8: // Clock
-	    //case 0xFA: // Start
-	    //case 0xFB: // Continue
-	    //case 0xFC: // Stop
-	    // but also Tune Request and Reserved
-	    data_bytes_cnt = 0;
-	    break;
-	  }
-	}
+          // Compare https://www.midi.org/specifications-old/item/table-1-summary-of-midi-message
+          switch(buffer[0]) {
+          case 0xF0:
+            // System exclusive begin
 
-	// Forward the event in the queue.
-	
-	// Copy the buffer: The first 3 bytes are filled
-	
-	// Add how many buffer bytes are used
-	const uint8_t used = data_bytes_cnt + 1;
-	memcpy(buffer+3, &used, sizeof(uint8_t));
-	
-	// Add a timestamp
-	const jack_nframes_t frames = jack_frame_time(jackdata->client);
-	memcpy(buffer+3+sizeof(uint8_t), &frames, sizeof(jack_nframes_t));
+            // Unknown data byte count. Note that Real-Time messages
+            // may be interleaved with a System Exclusive!
+            // Every SysEx byte until 0xF7 should start with a 0-bit, so skipping is safe.
+            continue;
+            break;
+          case 0xF7:
+            // System exclusive end
+            continue;
+            break;
 
-	// Sanity check
-	if (
-	    (buffer[0] & 0x80) &&
-	    !(buffer[1] & 0x80) &&
-	    !(buffer[2] & 0x80)
-	    ) {
-	  jack_ringbuffer_write(jackdata->ringbuffer_in, (const char *) buffer,
-				ringbuffer_msg_size);
-	} else {
-	  // Bad bytes. Discard the event.
-	}
+          case 0xF2:
+            // Song Position Pointer
+            data_bytes_cnt = 2;
+            break;
+
+          case 0xF1:
+            // MIDI Time Code Quarter Frame
+          case 0xF3:
+            // Song Select
+            data_bytes_cnt = 1;
+            break;
+
+          default:
+            // Especially these:
+            //case 0xF8: // Clock
+            //case 0xFA: // Start
+            //case 0xFB: // Continue
+            //case 0xFC: // Stop
+            // but also Tune Request and Reserved
+            data_bytes_cnt = 0;
+            break;
+          }
+        }
+
+        // Forward the event in the queue.
+
+        // Copy the buffer: The first 3 bytes are filled
+
+        // Add how many buffer bytes are used
+        const uint8_t used = data_bytes_cnt + 1;
+        memcpy(buffer+3, &used, sizeof(uint8_t));
+
+        // Add a timestamp
+        const jack_nframes_t frames = jack_frame_time(jackdata->client);
+        memcpy(buffer+3+sizeof(uint8_t), &frames, sizeof(jack_nframes_t));
+
+        // Sanity check
+        if ((buffer[0] & 0x80) && !(buffer[1] & 0x80) && !(buffer[2] & 0x80)) {
+          jack_ringbuffer_write(jackdata->ringbuffer_in, (const char *) buffer, ringbuffer_msg_size);
+        } else {
+          // Bad bytes. Discard the event.
+        }
       } else {
-	// Unexpected data byte. Discard it.
+        // Unexpected data byte. Discard it.
       }
-    }    
+    }
   }
   return NULL;
 }
