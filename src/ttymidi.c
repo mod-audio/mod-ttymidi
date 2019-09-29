@@ -450,11 +450,13 @@ void* read_midi_from_serial_port(void* ptr)
 
     size_t read_cnt = 0;
     uint8_t data_bytes_cnt = 0;
-    
+    uint8_t last_status_byte = 0;
+    bool has_status_byte;
+
     while (run) {
       // Clean the buffer
       memset(buffer, 0, ringbuffer_msg_size);
-      
+
       // Read a byte and go ahead iff it is a valid status byte.
       read_cnt = read(serial, buffer, 1);
       if (read_cnt != 1) {
@@ -463,14 +465,19 @@ void* read_midi_from_serial_port(void* ptr)
       }
 
       // Check if the first bit is set...
-      if ((buffer[0] & 0x80) == 0x80) {
+      has_status_byte = (buffer[0] & 0x80) == 0x80;
+      if (has_status_byte || last_status_byte != 0) {
         // ...then is a MIDI message. No SysEx data.
+        if (!has_status_byte) {
+            buffer[1] = buffer[0];
+            buffer[0] = last_status_byte;
+        }
 
-        if (((int) buffer[0]) < 0xF0) {
+        if (buffer[0] < 0xF0) {
           // Channel Voice or Mode Message ahead
+          last_status_byte = buffer[0];
 
-          // Program Change and Channel Pressure only have 1 data byte
-          // following!
+          // Program Change and Channel Pressure only have 1 data byte following!
           switch(buffer[0] & 0xF0) {
           case 0xC0: // Program Change
           case 0xD0: // Channel Pressure
@@ -481,11 +488,16 @@ void* read_midi_from_serial_port(void* ptr)
             break;
           }
 
-          read(serial, buffer+1, data_bytes_cnt);
+          if (has_status_byte) {
+            read(serial, buffer+1, data_bytes_cnt);
+          } else {
+            read(serial, buffer+2, data_bytes_cnt-1);
+          }
           // Whole payload in the buffer, ready to forward
 
         } else {
           // System Common Message ahead
+          last_status_byte = 0;
 
           // Compare https://www.midi.org/specifications-old/item/table-1-summary-of-midi-message
           switch(buffer[0]) {
@@ -496,11 +508,10 @@ void* read_midi_from_serial_port(void* ptr)
             // may be interleaved with a System Exclusive!
             // Every SysEx byte until 0xF7 should start with a 0-bit, so skipping is safe.
             continue;
-            break;
+
           case 0xF7:
             // System exclusive end
             continue;
-            break;
 
           case 0xF2:
             // Song Position Pointer
