@@ -212,6 +212,12 @@ static int process_client(jack_nframes_t frames, void* ptr)
                 offset = 0;
             }
 
+            // fixup NoteOn with velocity 0
+            if ((bufj[0] & 0xF0) == 0x90 && bufj[2] == 0x00) {
+                bufj[0] = 0x80 + (bufj[0] & 0x0F);
+                bufj[2] = 0x40;
+            }
+
             jack_midi_event_write(portbuf_in, offset, bufj, bsize);
         }
 
