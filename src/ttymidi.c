@@ -40,6 +40,8 @@
 #define MAX_DEV_STR_LEN               32
 #define MAX_MSG_SIZE                1024
 
+#define DEBUG                          1
+
 /* import ioctl definition here, as we can't include both "sys/ioctl.h" and "asm/termios.h" */
 extern int ioctl (int __fd, unsigned long int __request, ...) __THROW;
 
@@ -459,6 +461,10 @@ void* read_midi_from_serial_port(void* ptr)
 
       // Read a byte and go ahead iff it is a valid status byte.
       read_cnt = read(serial, buffer, 1);
+#ifdef DEBUG
+      printf("%x\t", (int) buffer[0] & 0xFF);
+      fflush(stdout);
+#endif
       if (read_cnt != 1) {
         // Nothing to read. Try again in the next loop.
         continue;
@@ -490,8 +496,20 @@ void* read_midi_from_serial_port(void* ptr)
 
           if (has_status_byte) {
             read(serial, buffer+1, data_bytes_cnt);
+#ifdef DEBUG
+            for (int i=0;i<data_bytes_cnt;i++) {
+               printf("%x\t", (int) buffer[1+i] & 0xFF);
+               fflush(stdout);
+            }
+#endif
           } else {
             read(serial, buffer+2, data_bytes_cnt-1);
+#ifdef DEBUG
+            for (int i=0;i<data_bytes_cnt-1;i++) {
+               printf("%x\t", (int) buffer[2+i] & 0xFF);
+               fflush(stdout);
+            }
+#endif
           }
           // Whole payload in the buffer, ready to forward
 
