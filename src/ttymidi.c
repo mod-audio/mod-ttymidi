@@ -40,7 +40,6 @@
 #define MAX_DEV_STR_LEN               32
 #define MAX_MSG_SIZE                1024
 
-#define DEBUG                          1
 
 /* import ioctl definition here, as we can't include both "sys/ioctl.h" and "asm/termios.h" */
 extern int ioctl (int __fd, unsigned long int __request, ...) __THROW;
@@ -449,7 +448,6 @@ void* read_midi_from_serial_port(void* ptr)
       fflush(stdout);
     }
   } else {
-
     size_t read_cnt = 0;
     uint8_t data_bytes_cnt = 0;
     uint8_t last_status_byte = 0;
@@ -457,14 +455,22 @@ void* read_midi_from_serial_port(void* ptr)
 
     while (run) {
       // Clean the buffer
+	if (arguments.verbose){
+		printf("\nBuffer before cleaning: ");
+		for (int i=0;i<ringbuffer_msg_size;i++) {
+        		printf("%x\t", (int) buffer[i] & 0xFF);
+                	fflush(stdout);
+        	}
+		printf("\n");
+	}
       memset(buffer, 0, ringbuffer_msg_size);
 
       // Read a byte and go ahead iff it is a valid status byte.
       read_cnt = read(serial, buffer, 1);
-#ifdef DEBUG
-      printf("%x\t", (int) buffer[0] & 0xFF);
-      fflush(stdout);
-#endif
+      if (arguments.verbose){
+      	printf("%x\t", (int) buffer[0] & 0xFF);
+      	fflush(stdout);
+      }
       if (read_cnt != 1) {
         // Nothing to read. Try again in the next loop.
         continue;
@@ -495,26 +501,26 @@ void* read_midi_from_serial_port(void* ptr)
           }
 
           if (has_status_byte) {
-            read(serial, buffer+1, data_bytes_cnt);
-#ifdef DEBUG
-            for (int i=0;i<data_bytes_cnt;i++) {
-               printf("%x\t", (int) buffer[1+i] & 0xFF);
-               fflush(stdout);
-            }
-#endif
+		for(int i=0;i<data_bytes_cnt;i++){
+	            read(serial, buffer+1+i, 1);
+		    if (arguments.verbose){
+		       printf("%x\t", (int) buffer[1+i] & 0xFF);
+		    }
+		    fflush(stdout);
+		}
           } else {
-            read(serial, buffer+2, data_bytes_cnt-1);
-#ifdef DEBUG
-            for (int i=0;i<data_bytes_cnt-1;i++) {
-               printf("%x\t", (int) buffer[2+i] & 0xFF);
-               fflush(stdout);
+	    for(int i=0;i<data_bytes_cnt-1;i++){
+            	read(serial, buffer+2+i, 1);
+                if (arguments.verbose){
+			printf("%x\t", (int) buffer[2+i] & 0xFF);
+      		}
+		fflush(stdout);
             }
-#endif
           }
           // Whole payload in the buffer, ready to forward
 
         } else {
-          // System Common Message ahead
+	  // System Common Message ahead
           last_status_byte = 0;
 
           // Compare https://www.midi.org/specifications-old/item/table-1-summary-of-midi-message
@@ -571,10 +577,14 @@ void* read_midi_from_serial_port(void* ptr)
         if ((buffer[0] & 0x80) && !(buffer[1] & 0x80) && !(buffer[2] & 0x80)) {
           jack_ringbuffer_write(jackdata->ringbuffer_in, (const char *) buffer, ringbuffer_msg_size);
         } else {
-          // Bad bytes. Discard the event.
-        }
+	  if (arguments.verbose){
+	  	printf("Sanity check failed: Bad bytes! Discard the event");
+	  }
+	}
       } else {
-        // Unexpected data byte. Discard it.
+	if (arguments.verbose){
+		printf("Unexpected data byte. Discard it!");
+	}
       }
     }
   }
