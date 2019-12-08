@@ -505,16 +505,16 @@ void* read_midi_from_serial_port(void* ptr)
 	            read(serial, buffer+1+i, 1);
 		    if (arguments.verbose){
 		       printf("%x\t", (int) buffer[1+i] & 0xFF);
+		       fflush(stdout);
 		    }
-		    fflush(stdout);
 		}
           } else {
 	    for(int i=0;i<data_bytes_cnt-1;i++){
             	read(serial, buffer+2+i, 1);
                 if (arguments.verbose){
 			printf("%x\t", (int) buffer[2+i] & 0xFF);
-      		}
-		fflush(stdout);
+      			fflush(stdout);
+		}
             }
           }
           // Whole payload in the buffer, ready to forward
