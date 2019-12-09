@@ -493,16 +493,16 @@ void* read_midi_from_serial_port(void* ptr)
           }
 
           if (has_status_byte) {
-		for(int i=0;i<data_bytes_cnt;i++){
-	            read(serial, buffer+1+i, 1);
+             for(int i=0;i<data_bytes_cnt;i++) {
+                read(serial, buffer+1+i, 1);
 #ifdef DEBUG		   
-                    printf("%x\t", (int) buffer[1+i] & 0xFF);
-                    fflush(stdout);
+                printf("%x\t", (int) buffer[1+i] & 0xFF);
+                fflush(stdout);
 #endif
-		}
+             }
           } else {
-	    if (data_bytes_cnt > 1) {
-            	read(serial, buffer+2, 1);
+             if (data_bytes_cnt > 1) {
+                read(serial, buffer+2, 1);
 #ifdef DEBUG
                 printf("%x\t", (int) buffer[2] & 0xFF);
                 fflush(stdout);
