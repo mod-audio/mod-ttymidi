@@ -39,8 +39,8 @@
 
 #define MAX_DEV_STR_LEN               32
 #define MAX_MSG_SIZE                1024
-
-
+#undef DEBUG			   		
+	
 /* import ioctl definition here, as we can't include both "sys/ioctl.h" and "asm/termios.h" */
 extern int ioctl (int __fd, unsigned long int __request, ...) __THROW;
 
@@ -57,7 +57,6 @@ static struct argp_option options[] =
 {
 	{"serialdevice" , 's', "DEV" , 0, "Serial device to use. Default = /dev/ttyUSB0", 0 },
 	{"baudrate"     , 'b', "BAUD", 0, "Serial port baud rate. Default = 31250", 0 },
-	{"verbose"      , 'v', 0     , 0, "For debugging: Produce verbose output", 0 },
 	{"printonly"    , 'p', 0     , 0, "Super debugging: Print values read from serial -- and do nothing else", 0 },
 	{"quiet"        , 'q', 0     , 0, "Don't produce any output, even when the print command is sent", 0 },
 	{"name"		, 'n', "NAME", 0, "Name of the JACK client. Default = ttymidi", 0 },
@@ -66,7 +65,7 @@ static struct argp_option options[] =
 
 typedef struct _arguments
 {
-	int  silent, verbose, printonly;
+	int  silent, printonly;
 	char serialdevice[MAX_DEV_STR_LEN];
 	int  baudrate;
 	char name[MAX_DEV_STR_LEN];
@@ -109,9 +108,6 @@ static error_t parse_opt (int key, char *arg, struct argp_state *state)
 		case 'q':
 			arguments->silent = 1;
 			break;
-		case 'v':
-			arguments->verbose = 1;
-			break;
 		case 's':
 			if (arg == NULL) break;
 			strncpy(arguments->serialdevice, arg, MAX_DEV_STR_LEN);
@@ -147,7 +143,6 @@ void arg_set_defaults(arguments_t *arguments)
 	char *serialdevice_temp = "/dev/ttyUSB0";
 	arguments->printonly    = 0;
 	arguments->silent       = 0;
-	arguments->verbose      = 0;
 	arguments->baudrate     = 31250;
 	char *name_tmp		= (char *)"ttymidi";
 	strncpy(arguments->serialdevice, serialdevice_temp, MAX_DEV_STR_LEN);
@@ -201,15 +196,12 @@ static int process_client(jack_nframes_t frames, void* ptr)
             else
                 last_buf_frame = buf_frame;
 
-            if (buf_frame >= cycle_start)
-            {
+            if (buf_frame >= cycle_start){
                 offset = buf_frame - cycle_start;
 
                 if (offset >= frames)
                     offset = frames - 1;
-            }
-            else
-            {
+            } else {
                 offset = 0;
             }
 
@@ -455,22 +447,22 @@ void* read_midi_from_serial_port(void* ptr)
 
     while (run) {
       // Clean the buffer
-	if (arguments.verbose){
+#ifdef DEBUG
 		printf("\nBuffer before cleaning: ");
 		for (int i=0;i<ringbuffer_msg_size;i++) {
         		printf("%x\t", (int) buffer[i] & 0xFF);
                 	fflush(stdout);
         	}
 		printf("\n");
-	}
+#endif
       memset(buffer, 0, ringbuffer_msg_size);
 
       // Read a byte and go ahead iff it is a valid status byte.
       read_cnt = read(serial, buffer, 1);
-      if (arguments.verbose){
+#ifdef DEBUG
       	printf("%x\t", (int) buffer[0] & 0xFF);
       	fflush(stdout);
-      }
+#endif
       if (read_cnt != 1) {
         // Nothing to read. Try again in the next loop.
         continue;
@@ -503,18 +495,18 @@ void* read_midi_from_serial_port(void* ptr)
           if (has_status_byte) {
 		for(int i=0;i<data_bytes_cnt;i++){
 	            read(serial, buffer+1+i, 1);
-		    if (arguments.verbose){
-		       printf("%x\t", (int) buffer[1+i] & 0xFF);
-		       fflush(stdout);
-		    }
+#ifdef DEBUG		   
+		    printf("%x\t", (int) buffer[1+i] & 0xFF);
+		    fflush(stdout);
+#endif
 		}
           } else {
 	    for(int i=0;i<data_bytes_cnt-1;i++){
             	read(serial, buffer+2+i, 1);
-                if (arguments.verbose){
-			printf("%x\t", (int) buffer[2+i] & 0xFF);
-      			fflush(stdout);
-		}
+#ifdef DEBUG
+		printf("%x\t", (int) buffer[2+i] & 0xFF);
+      		fflush(stdout);
+#endif
             }
           }
           // Whole payload in the buffer, ready to forward
@@ -577,14 +569,14 @@ void* read_midi_from_serial_port(void* ptr)
         if ((buffer[0] & 0x80) && !(buffer[1] & 0x80) && !(buffer[2] & 0x80)) {
           jack_ringbuffer_write(jackdata->ringbuffer_in, (const char *) buffer, ringbuffer_msg_size);
         } else {
-	  if (arguments.verbose){
-	  	printf("Sanity check failed: Bad bytes! Discard the event");
-	  }
+#ifdef DEBUG
+	  printf("Sanity check failed: Bad bytes! Discard the event");
+#endif
 	}
       } else {
-	if (arguments.verbose){
-		printf("Unexpected data byte. Discard it!");
-	}
+#ifdef DEBUG		
+	printf("Unexpected data byte. Discard it!");
+#endif
       }
     }
   }
@@ -758,7 +750,6 @@ int jack_initialize(jack_client_t* client, const char* load_init)
 
         // Disable logs for internal client
         arguments.silent = 1;
-        arguments.verbose = 0;
 
         if (load_init != NULL && load_init[0] != '\0')
             strncpy(arguments.serialdevice, load_init, MAX_DEV_STR_LEN);
