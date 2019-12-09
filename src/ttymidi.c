@@ -39,7 +39,7 @@
 
 #define MAX_DEV_STR_LEN               32
 #define MAX_MSG_SIZE                1024
-	
+
 /* import ioctl definition here, as we can't include both "sys/ioctl.h" and "asm/termios.h" */
 extern int ioctl (int __fd, unsigned long int __request, ...) __THROW;
 
