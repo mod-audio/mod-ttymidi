@@ -515,7 +515,7 @@ void* read_midi_from_serial_port(void* ptr)
               }
             }
           } else if (data_bytes_cnt > 1) {
-            read_cnt = read(serial, buffer+2, data_bytes_cnt-1);
+            read(serial, buffer+2, data_bytes_cnt-1);
             if (arguments.verbose) {
               printf("%02x\t", buffer[2] & 0xFF);
               fflush(stdout);
