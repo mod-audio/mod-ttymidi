@@ -427,11 +427,11 @@ void* write_midi_from_jack(void* ptr)
 void* read_midi_from_serial_port(void* ptr)
 {
   jack_midi_data_t buffer[ringbuffer_msg_size];
-  
+
   //char buf[3 + sizeof(jack_nframes_t)];
   //char msg[MAX_MSG_SIZE];
   //int msglen;
-  
+
   jackdata_t* jackdata = (jackdata_t*) ptr;
 
   /*
@@ -502,15 +502,20 @@ void* read_midi_from_serial_port(void* ptr)
           }
 
           if (has_status_byte) {
-            read(serial, buffer+1, data_bytes_cnt);
-            if (arguments.verbose) {
-              for (uint8_t i=0; i<data_bytes_cnt; ++i) {
-                printf("%02x\t",  buffer[i+1U] & 0xFF);
-                fflush(stdout);
+            read_cnt = 0;
+            while (read_cnt < data_bytes_cnt) {
+              int read_offset = read_cnt;
+              // in the case that not all bytes are read, a loop is needed. The ! in verbose mode indicates the reloaded byte.
+              read_cnt += read(serial, buffer+1+read_cnt, data_bytes_cnt-read_cnt);
+              if (arguments.verbose) {
+                for (uint8_t i=0; i<read_cnt-read_offset; ++i) {
+                  printf("%02x%s\t",  buffer[i+read_offset+1U] & 0xFF, (read_offset>0?"!":""));
+                  fflush(stdout);
+                }
               }
             }
           } else if (data_bytes_cnt > 1) {
-            read(serial, buffer+2, data_bytes_cnt-1);
+            read_cnt = read(serial, buffer+2, data_bytes_cnt-1);
             if (arguments.verbose) {
               printf("%02x\t", buffer[2] & 0xFF);
               fflush(stdout);
