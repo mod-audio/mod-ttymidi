@@ -443,7 +443,7 @@ void* read_midi_from_serial_port(void* ptr)
   if (arguments.printonly) {
     while (run) {
       read(serial, buffer, 1);
-      printf("%x\t", (int) buffer[0] & 0xFF);
+      printf("%02x\t", buffer[0] & 0xFF);
       fflush(stdout);
     }
   } else {
@@ -454,6 +454,15 @@ void* read_midi_from_serial_port(void* ptr)
     bool has_status_byte;
 
     while (run) {
+      if (arguments.verbose) {
+        printf("\nBuffer before cleaning: ");
+        for (uint8_t i=0; i<data_bytes_cnt; ++i) {
+            printf("%02x\t", buffer[i] & 0xFF);
+        }
+        printf("\n");
+        fflush(stdout);
+      }
+
       // Clean the buffer
       memset(buffer, 0, ringbuffer_msg_size);
 
@@ -462,6 +471,10 @@ void* read_midi_from_serial_port(void* ptr)
       if (read_cnt != 1) {
         // Nothing to read. Try again in the next loop.
         continue;
+      }
+      if (arguments.verbose) {
+        printf("%02x\t", buffer[0] & 0xFF);
+        fflush(stdout);
       }
 
       // Check if the first bit is set...
@@ -490,8 +503,18 @@ void* read_midi_from_serial_port(void* ptr)
 
           if (has_status_byte) {
             read(serial, buffer+1, data_bytes_cnt);
-          } else {
+            if (arguments.verbose) {
+              for (uint8_t i=0; i<data_bytes_cnt; ++i) {
+                printf("%02x\t",  buffer[i+1U] & 0xFF);
+                fflush(stdout);
+              }
+            }
+          } else if (data_bytes_cnt > 1) {
             read(serial, buffer+2, data_bytes_cnt-1);
+            if (arguments.verbose) {
+              printf("%02x\t", buffer[2] & 0xFF);
+              fflush(stdout);
+            }
           }
           // Whole payload in the buffer, ready to forward
 
@@ -554,9 +577,17 @@ void* read_midi_from_serial_port(void* ptr)
           jack_ringbuffer_write(jackdata->ringbuffer_in, (const char *) buffer, ringbuffer_msg_size);
         } else {
           // Bad bytes. Discard the event.
+          if (arguments.verbose) {
+            printf("Sanity check failed, bad bytes: %02x\t%02x\t%02x\n", buffer[0], buffer[1], buffer[2]);
+            fflush(stdout);
+          }
         }
       } else {
         // Unexpected data byte. Discard it.
+        if (arguments.verbose) {
+          printf("Status byte check failed, first bad byte: %02x\n", buffer[0]);
+          fflush(stdout);
+        }
       }
     }
   }
