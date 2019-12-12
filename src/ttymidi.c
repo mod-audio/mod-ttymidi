@@ -56,8 +56,10 @@ static struct argp_option options[] =
 {
 	{"serialdevice" , 's', "DEV" , 0, "Serial device to use. Default = /dev/ttyUSB0", 0 },
 	{"baudrate"     , 'b', "BAUD", 0, "Serial port baud rate. Default = 31250", 0 },
+#ifdef DEBUG
 	{"verbose"      , 'v', 0     , 0, "For debugging: Produce verbose output", 0 },
 	{"printonly"    , 'p', 0     , 0, "Super debugging: Print values read from serial -- and do nothing else", 0 },
+#endif
 	{"quiet"        , 'q', 0     , 0, "Don't produce any output, even when the print command is sent", 0 },
 	{"name"		, 'n', "NAME", 0, "Name of the JACK client. Default = ttymidi", 0 },
 	{ 0 }
@@ -65,7 +67,11 @@ static struct argp_option options[] =
 
 typedef struct _arguments
 {
-	int  silent, verbose, printonly;
+	int silent;
+#ifdef DEBUG
+	int verbose;
+	int printonly;
+#endif
 	char serialdevice[MAX_DEV_STR_LEN];
 	int  baudrate;
 	char name[MAX_DEV_STR_LEN];
@@ -102,15 +108,17 @@ static error_t parse_opt (int key, char *arg, struct argp_state *state)
 
 	switch (key)
 	{
-		case 'p':
-			arguments->printonly = 1;
-			break;
 		case 'q':
 			arguments->silent = 1;
+			break;
+#ifdef DEBUG
+		case 'p':
+			arguments->printonly = 1;
 			break;
 		case 'v':
 			arguments->verbose = 1;
 			break;
+#endif
 		case 's':
 			if (arg == NULL) break;
 			strncpy(arguments->serialdevice, arg, MAX_DEV_STR_LEN);
@@ -144,9 +152,11 @@ static error_t parse_opt (int key, char *arg, struct argp_state *state)
 void arg_set_defaults(arguments_t *arguments)
 {
 	char *serialdevice_temp = "/dev/ttyUSB0";
-	arguments->printonly    = 0;
 	arguments->silent       = 0;
+#ifdef DEBUG
 	arguments->verbose      = 0;
+	arguments->printonly    = 0;
+#endif
 	arguments->baudrate     = 31250;
 	char *name_tmp		= (char *)"ttymidi";
 	strncpy(arguments->serialdevice, serialdevice_temp, MAX_DEV_STR_LEN);
@@ -462,20 +472,25 @@ void* read_midi_from_serial_port(void* ptr)
 
   jackdata_t* jackdata = (jackdata_t*) ptr;
 
+#ifdef DEBUG
   /*
    * Super-debug mode:
    *
    * Print to screen whatever comes through the serial port. Send
    * nothing into the MIDI-event queue.
    */
-  if (arguments.printonly) {
+  if (arguments.printonly)
+  {
     while (run) {
       if (read(serial, buffer, 1) == 1) {
         printf("%02x\t", buffer[0] & 0xFF);
         fflush(stdout);
       }
     }
-  } else {
+  }
+  else
+#endif
+  {
 
     int error;
     ssize_t read_cnt;
@@ -494,10 +509,12 @@ rerun:
         // Nothing to read. Try again in the next loop.
         continue;
       }
+#ifdef DEBUG
       if (arguments.verbose) {
         printf("%02x\t", buffer[0] & 0xFF);
         fflush(stdout);
       }
+#endif
 
       // Check if the first bit is set...
       has_status_byte = (buffer[0] & 0x80) == 0x80;
@@ -573,10 +590,12 @@ rerun:
             continue;
           }
           if (error < 0) {
+#ifdef DEBUG
             if (arguments.verbose) {
               printf("error %i while reading serial: %s\n", error, strerror(error));
               fflush(stdout);
             }
+#endif
             goto rerun;
             break;
           }
@@ -585,7 +604,7 @@ rerun:
         }
 
         // Whole payload in the buffer, ready to forward
-
+#ifdef DEBUG
         if (arguments.verbose) {
           for (uint8_t i=1U; i<read_cnt-1U; ++i) {
             printf("%02x\t", buffer[i] & 0xFF);
@@ -594,6 +613,7 @@ rerun:
           printf("%02x\n", buffer[read_cnt-1U] & 0xFF);
           fflush(stdout);
         }
+#endif
 
         // Forward the event in the queue.
 
@@ -612,17 +632,21 @@ rerun:
           jack_ringbuffer_write(jackdata->ringbuffer_in, (const char *) buffer, ringbuffer_msg_size);
         } else {
           // Bad bytes. Discard the event.
+#ifdef DEBUG
           if (arguments.verbose) {
             printf("Sanity check failed, bad bytes: %02x\t%02x\t%02x\n", buffer[0], buffer[1], buffer[2]);
             fflush(stdout);
           }
+#endif
         }
       } else {
         // Unexpected data byte. Discard it.
+#ifdef DEBUG
         if (arguments.verbose) {
           printf("Status byte check failed, first bad byte: %02x\n", buffer[0]);
           fflush(stdout);
         }
+#endif
       }
     }
   }
@@ -722,10 +746,12 @@ static bool _ttymidi_init(bool exit_on_failure, jack_client_t* client)
         ser_info.flags |= ASYNC_LOW_LATENCY;
         ioctl(serial, TIOCSSERIAL, &ser_info);
 
+#ifdef DEBUG
         if (arguments.printonly)
         {
                 printf("Super debug mode: Only printing the signal to screen. Nothing else.\n");
         }
+#endif
 
         /*
          * read commands
@@ -794,9 +820,11 @@ int jack_initialize(jack_client_t* client, const char* load_init)
 {
         arg_set_defaults(&arguments);
 
-        // Disable logs for internal client
+        // Enable logs for debug build
         arguments.silent = 1;
-        arguments.verbose = 0;
+#ifdef DEBUG
+        arguments.verbose = 1;
+#endif
 
         if (load_init != NULL && load_init[0] != '\0')
             strncpy(arguments.serialdevice, load_init, MAX_DEV_STR_LEN);
