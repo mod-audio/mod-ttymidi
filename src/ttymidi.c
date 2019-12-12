@@ -212,8 +212,11 @@ static int process_client(jack_nframes_t frames, void* ptr)
             memcpy(&bsize, bufc+3, sizeof(uint8_t));
             memcpy(&buf_frame, bufc+3+sizeof(uint8_t), sizeof(jack_nframes_t));
 
-            for (uint8_t i=0; i<bsize; ++i)
+            uint8_t i=0;
+            for (; i<bsize; ++i)
                 bufj[i] = bufc[i];
+            for (; i<3; ++i)
+                bufj[i] = 0;
 
             buf_frame += frames - jackdata->bufsize_compensation;
 
