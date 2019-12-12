@@ -478,21 +478,13 @@ void* read_midi_from_serial_port(void* ptr)
   } else {
 
     int error;
-    size_t read_cnt;
+    ssize_t read_cnt;
     uint8_t data_bytes_cnt = 0;
     uint8_t last_status_byte = 0;
     bool has_status_byte;
 
+rerun:
     while (run) {
-      if (arguments.verbose) {
-        printf("\nBuffer before cleaning: ");
-        for (uint8_t i=0; i<data_bytes_cnt; ++i) {
-            printf("%02x\t", buffer[i] & 0xFF);
-        }
-        printf("\n");
-        fflush(stdout);
-      }
-
       // Clean the buffer
       memset(buffer, 0, ringbuffer_msg_size);
 
@@ -531,31 +523,6 @@ void* read_midi_from_serial_port(void* ptr)
             data_bytes_cnt = 2;
             break;
           }
-
-          while (read_cnt < data_bytes_cnt) {
-            error = read_retry_or_error(serial, buffer+read_cnt, data_bytes_cnt-read_cnt);
-
-            if (error == 0) {
-              continue;
-            }
-            if (error < 0) {
-              if (arguments.verbose) {
-                printf("error %i while reading serial: %s\n", error, strerror(error));
-                fflush(stdout);
-              }
-              continue;
-            }
-
-            read_cnt += error;
-
-            if (arguments.verbose) {
-              for (uint8_t i=read_cnt; i<data_bytes_cnt; ++i) {
-                printf("%02x\t", buffer[i] & 0xFF);
-                fflush(stdout);
-              }
-            }
-          }
-          // Whole payload in the buffer, ready to forward
 
         } else {
           // System Common Message ahead
@@ -599,6 +566,35 @@ void* read_midi_from_serial_port(void* ptr)
           }
         }
 
+        while (read_cnt < data_bytes_cnt+1) {
+          error = read_retry_or_error(serial, buffer+read_cnt, data_bytes_cnt+1U-read_cnt);
+
+          if (error == 0) {
+            continue;
+          }
+          if (error < 0) {
+            if (arguments.verbose) {
+              printf("error %i while reading serial: %s\n", error, strerror(error));
+              fflush(stdout);
+            }
+            goto rerun;
+            break;
+          }
+
+          read_cnt += error;
+        }
+
+        // Whole payload in the buffer, ready to forward
+
+        if (arguments.verbose) {
+          for (uint8_t i=1U; i<read_cnt-1U; ++i) {
+            printf("%02x\t", buffer[i] & 0xFF);
+            fflush(stdout);
+          }
+          printf("%02x\n", buffer[read_cnt-1U] & 0xFF);
+          fflush(stdout);
+        }
+
         // Forward the event in the queue.
 
         // Copy the buffer: The first 3 bytes are filled
@@ -609,7 +605,7 @@ void* read_midi_from_serial_port(void* ptr)
 
         // Add a timestamp
         const jack_nframes_t frames = jack_frame_time(jackdata->client);
-        memcpy(buffer+3+sizeof(uint8_t), &frames, sizeof(jack_nframes_t));
+        memcpy(buffer+4, &frames, sizeof(jack_nframes_t));
 
         // Sanity check
         if ((buffer[0] & 0x80) && !(buffer[1] & 0x80) && !(buffer[2] & 0x80)) {
