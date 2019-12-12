@@ -160,6 +160,28 @@ static struct argp argp = { options, parse_opt, NULL, doc, NULL, NULL, NULL };
 arguments_t arguments;
 
 /* --------------------------------------------------------------------- */
+// The following read/write wrappers handle the case of interruption by system signals
+
+static inline uint8_t read_retry_or_error(int fd, void* dst, uint8_t size)
+{
+    int error;
+    do {
+        error = read(fd, dst, size);
+    } while (error == -1 && errno == EINTR);
+    return error;
+}
+
+static inline uint8_t write_retry_or_success(int fd, const void* src, uint8_t size)
+{
+    int error;
+    do {
+        error = write(fd, src, size);
+    } while (error == -1 && errno == EINTR);
+    // in case of error, return full size so outer loop can stop
+    return error >= 0 ? (uint8_t)error : size;
+}
+
+/* --------------------------------------------------------------------- */
 // JACK stuff
 
 const uint8_t ringbuffer_msg_size = 3 + sizeof(uint8_t) + sizeof(jack_nframes_t);
@@ -365,14 +387,13 @@ void close_client(jackdata_t* jackdata)
 /* --------------------------------------------------------------------- */
 // MIDI stuff
 
-
 void* write_midi_from_jack(void* ptr)
 {
         jackdata_t* jackdata = (jackdata_t*) ptr;
 
         char bufc[4];
         jack_nframes_t buf_frame, buf_diff, cycle_start;
-        uint8_t size;
+        uint8_t size, written;
 
         const jack_nframes_t sample_rate = jack_get_sample_rate(jackdata->client);
 
@@ -417,7 +438,11 @@ void* write_midi_from_jack(void* ptr)
                         }
 
                         size = (uint8_t)bufc[0];
-                        write(serial, bufc+1, size);
+                        written = 0;
+
+                        do {
+                            written += write_retry_or_success(serial, bufc+1+written, size-written);
+                        } while (written < size);
                 }
         }
 
@@ -427,11 +452,11 @@ void* write_midi_from_jack(void* ptr)
 void* read_midi_from_serial_port(void* ptr)
 {
   jack_midi_data_t buffer[ringbuffer_msg_size];
-  
+
   //char buf[3 + sizeof(jack_nframes_t)];
   //char msg[MAX_MSG_SIZE];
   //int msglen;
-  
+
   jackdata_t* jackdata = (jackdata_t*) ptr;
 
   /*
@@ -442,13 +467,15 @@ void* read_midi_from_serial_port(void* ptr)
    */
   if (arguments.printonly) {
     while (run) {
-      read(serial, buffer, 1);
-      printf("%02x\t", buffer[0] & 0xFF);
-      fflush(stdout);
+      if (read(serial, buffer, 1) == 1) {
+        printf("%02x\t", buffer[0] & 0xFF);
+        fflush(stdout);
+      }
     }
   } else {
 
-    size_t read_cnt = 0;
+    int error;
+    size_t read_cnt;
     uint8_t data_bytes_cnt = 0;
     uint8_t last_status_byte = 0;
     bool has_status_byte;
@@ -484,6 +511,7 @@ void* read_midi_from_serial_port(void* ptr)
         if (!has_status_byte) {
             buffer[1] = buffer[0];
             buffer[0] = last_status_byte;
+            read_cnt  = 2;
         }
 
         if (buffer[0] < 0xF0) {
@@ -501,19 +529,27 @@ void* read_midi_from_serial_port(void* ptr)
             break;
           }
 
-          if (has_status_byte) {
-            read(serial, buffer+1, data_bytes_cnt);
-            if (arguments.verbose) {
-              for (uint8_t i=0; i<data_bytes_cnt; ++i) {
-                printf("%02x\t",  buffer[i+1U] & 0xFF);
+          while (read_cnt < data_bytes_cnt) {
+            error = read_retry_or_error(serial, buffer+read_cnt, data_bytes_cnt-read_cnt);
+
+            if (error == 0) {
+              continue;
+            }
+            if (error < 0) {
+              if (arguments.verbose) {
+                printf("error %i while reading serial: %s\n", error, strerror(error));
                 fflush(stdout);
               }
+              continue;
             }
-          } else if (data_bytes_cnt > 1) {
-            read(serial, buffer+2, data_bytes_cnt-1);
+
+            read_cnt += error;
+
             if (arguments.verbose) {
-              printf("%02x\t", buffer[2] & 0xFF);
-              fflush(stdout);
+              for (uint8_t i=read_cnt; i<data_bytes_cnt; ++i) {
+                printf("%02x\t", buffer[i] & 0xFF);
+                fflush(stdout);
+              }
             }
           }
           // Whole payload in the buffer, ready to forward
