@@ -60,14 +60,12 @@ static struct argp_option options[] =
 	{"verbose"      , 'v', 0     , 0, "For debugging: Produce verbose output", 0 },
 	{"printonly"    , 'p', 0     , 0, "Super debugging: Print values read from serial -- and do nothing else", 0 },
 #endif
-	{"quiet"        , 'q', 0     , 0, "Don't produce any output, even when the print command is sent", 0 },
 	{"name"		, 'n', "NAME", 0, "Name of the JACK client. Default = ttymidi", 0 },
 	{ 0 }
 };
 
 typedef struct _arguments
 {
-	int silent;
 #ifdef DEBUG
 	int verbose;
 	int printonly;
@@ -108,9 +106,6 @@ static error_t parse_opt (int key, char *arg, struct argp_state *state)
 
 	switch (key)
 	{
-		case 'q':
-			arguments->silent = 1;
-			break;
 #ifdef DEBUG
 		case 'p':
 			arguments->printonly = 1;
@@ -151,16 +146,13 @@ static error_t parse_opt (int key, char *arg, struct argp_state *state)
 
 void arg_set_defaults(arguments_t *arguments)
 {
-	char *serialdevice_temp = "/dev/ttyUSB0";
-	arguments->silent       = 0;
 #ifdef DEBUG
-	arguments->verbose      = 0;
-	arguments->printonly    = 0;
+	arguments->verbose   = 0;
+	arguments->printonly = 0;
 #endif
-	arguments->baudrate     = 31250;
-	char *name_tmp		= (char *)"ttymidi";
-	strncpy(arguments->serialdevice, serialdevice_temp, MAX_DEV_STR_LEN);
-	strncpy(arguments->name, name_tmp, MAX_DEV_STR_LEN);
+	arguments->baudrate  = 31250;
+	strncpy(arguments->serialdevice, "/dev/ttyUSB0", MAX_DEV_STR_LEN);
+	strncpy(arguments->name, "ttymidi", MAX_DEV_STR_LEN);
 }
 
 const char *argp_program_version     = "ttymidi 0.60";
@@ -819,10 +811,8 @@ int jack_initialize(jack_client_t* client, const char* load_init);
 int jack_initialize(jack_client_t* client, const char* load_init)
 {
         arg_set_defaults(&arguments);
-
-        // Enable logs for debug build
-        arguments.silent = 1;
 #ifdef DEBUG
+        // Enable logs for debug build
         arguments.verbose = 1;
 #endif
 
