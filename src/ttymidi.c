@@ -116,11 +116,11 @@ static error_t parse_opt (int key, char *arg, struct argp_state *state)
 #endif
 		case 's':
 			if (arg == NULL) break;
-			strncpy(arguments->serialdevice, arg, MAX_DEV_STR_LEN);
+			strncpy(arguments->serialdevice, arg, MAX_DEV_STR_LEN-1);
 			break;
 		case 'n':
 			if (arg == NULL) break;
-			strncpy(arguments->name, arg, MAX_DEV_STR_LEN);
+			strncpy(arguments->name, arg, MAX_DEV_STR_LEN-1);
 			break;
 		case 'b':
 			if (arg == NULL) break;
@@ -159,7 +159,7 @@ const char *argp_program_version     = "ttymidi 0.60";
 const char *argp_program_bug_address = "tvst@hotmail.com";
 static char doc[]       = "ttymidi - Connect serial port devices to JACK MIDI programs!";
 static struct argp argp = { options, parse_opt, NULL, doc, NULL, NULL, NULL };
-arguments_t arguments;
+static arguments_t arguments;
 
 /* --------------------------------------------------------------------- */
 // The following read/write wrappers handle the case of interruption by system signals
@@ -734,6 +734,7 @@ static bool _ttymidi_init(bool exit_on_failure, jack_client_t* client)
 
         // Linux-specific: enable low latency mode (FTDI "nagling off")
         struct serial_struct ser_info;
+        bzero(&ser_info, sizeof(ser_info));
         ioctl(serial, TIOCGSERIAL, &ser_info);
         ser_info.flags |= ASYNC_LOW_LATENCY;
         ioctl(serial, TIOCSSERIAL, &ser_info);
@@ -817,7 +818,7 @@ int jack_initialize(jack_client_t* client, const char* load_init)
 #endif
 
         if (load_init != NULL && load_init[0] != '\0')
-            strncpy(arguments.serialdevice, load_init, MAX_DEV_STR_LEN);
+            strncpy(arguments.serialdevice, load_init, MAX_DEV_STR_LEN-1);
 
         if (! _ttymidi_init(false, client))
                 return 1;
