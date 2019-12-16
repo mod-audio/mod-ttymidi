@@ -116,11 +116,11 @@ static error_t parse_opt (int key, char *arg, struct argp_state *state)
 #endif
 		case 's':
 			if (arg == NULL) break;
-			strncpy(arguments->serialdevice, arg, MAX_DEV_STR_LEN);
+			snprintf(arguments->serialdevice, MAX_DEV_STR_LEN, "%s", arg);
 			break;
 		case 'n':
 			if (arg == NULL) break;
-			strncpy(arguments->name, arg, MAX_DEV_STR_LEN);
+			snprintf(arguments->name, MAX_DEV_STR_LEN, "%s", arg);
 			break;
 		case 'b':
 			if (arg == NULL) break;
@@ -151,8 +151,8 @@ void arg_set_defaults(arguments_t *arguments)
 	arguments->printonly = 0;
 #endif
 	arguments->baudrate  = 31250;
-	strncpy(arguments->serialdevice, "/dev/ttyUSB0", MAX_DEV_STR_LEN);
-	strncpy(arguments->name, "ttymidi", MAX_DEV_STR_LEN);
+	snprintf(arguments->serialdevice, MAX_DEV_STR_LEN, "/dev/ttyUSB0");
+	snprintf(arguments->name, MAX_DEV_STR_LEN, "ttymidi");
 }
 
 const char *argp_program_version     = "ttymidi 0.60";
@@ -817,7 +817,7 @@ int jack_initialize(jack_client_t* client, const char* load_init)
 #endif
 
         if (load_init != NULL && load_init[0] != '\0')
-            strncpy(arguments.serialdevice, load_init, MAX_DEV_STR_LEN);
+                snprintf(arguments.serialdevice, MAX_DEV_STR_LEN, "%s", load_init);
 
         if (! _ttymidi_init(false, client))
                 return 1;
