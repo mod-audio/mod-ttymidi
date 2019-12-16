@@ -3,7 +3,7 @@ DESTDIR ?=
 PREFIX = /usr/local
 
 CC ?= gcc
-CFLAGS += -std=gnu99 -Wall -Wextra -Wshadow -Wformat-truncation=2 -Wformat-overflow=2 -Wstringop-overflow=4 -Wstringop-truncation -Werror -fvisibility=hidden
+CFLAGS += -std=gnu99 -Wall -Wextra -Wshadow -Werror -fvisibility=hidden
 LDFLAGS += -Wl,--no-undefined
 
 ifeq ($(DEBUG),1)
