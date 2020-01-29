@@ -818,7 +818,16 @@ int jack_initialize(jack_client_t* client, const char* load_init)
 #endif
 
         if (load_init != NULL && load_init[0] != '\0')
+        {
             strncpy(arguments.serialdevice, load_init, MAX_DEV_STR_LEN-1);
+        }
+        else
+        {
+            const char* serialdevice_env = getenv("MOD_MIDI_SERIAL_PORT");
+
+            if (serialdevice_env != NULL && serialdevice_env[0] != '\0')
+                strncpy(arguments.serialdevice, serialdevice_env, MAX_DEV_STR_LEN-1);
+        }
 
         if (! _ttymidi_init(false, client))
                 return 1;
