@@ -509,6 +509,11 @@ rerun:
       }
 #endif
 
+      // Ignore active-sensing
+      if (buffer[0] == 0xFE) {
+          continue;
+      }
+
       // Check if the first bit is set...
       has_status_byte = (buffer[0] & 0x80) == 0x80;
       if (has_status_byte || last_status_byte != 0) {
