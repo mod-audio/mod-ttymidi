@@ -155,8 +155,8 @@ void arg_set_defaults(arguments_t *arguments)
 	strncpy(arguments->name, "ttymidi", MAX_DEV_STR_LEN);
 }
 
-const char *argp_program_version     = "ttymidi 0.60";
-const char *argp_program_bug_address = "tvst@hotmail.com";
+const char *argp_program_version     = "ttymidi 1.0.0";
+const char *argp_program_bug_address = "falktx@moddevices.com";
 static char doc[]       = "ttymidi - Connect serial port devices to JACK MIDI programs!";
 static struct argp argp = { options, parse_opt, NULL, doc, NULL, NULL, NULL };
 static arguments_t arguments;
@@ -297,6 +297,7 @@ bool open_client(jackdata_t* jackdata, jack_client_t* client)
 {
         jack_port_t *port_in, *port_out;
         jack_ringbuffer_t *ringbuffer_in, *ringbuffer_out;
+        bzero(jackdata, sizeof(*jackdata));
 
         if (client == NULL)
         {
@@ -649,9 +650,9 @@ rerun:
 /* --------------------------------------------------------------------- */
 // Main program
 
-struct termios2 oldtio, newtio;
-jackdata_t jackdata;
-pthread_t midi_out_thread;
+static struct termios2 oldtio, newtio;
+static jackdata_t jackdata;
+static pthread_t midi_out_thread;
 
 static bool _ttymidi_init(bool exit_on_failure, jack_client_t* client)
 {
