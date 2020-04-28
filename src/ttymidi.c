@@ -164,11 +164,11 @@ static arguments_t arguments;
 /* --------------------------------------------------------------------- */
 // The following read/write wrappers handle the case of interruption by system signals
 
-static inline uint8_t read_retry_or_error(int fd, void* dst, uint8_t size)
+static inline uint8_t read_retry_or_error(int fd, void* dst)
 {
     int error;
     do {
-        error = read(fd, dst, size);
+        error = read(fd, dst, 1);
     } while (error == -1 && errno == EINTR);
     return error;
 }
@@ -540,9 +540,6 @@ rerun:
           }
 
         } else {
-          // System Common Message ahead
-          last_status_byte = 0;
-
           // Compare https://www.midi.org/specifications-old/item/table-1-summary-of-midi-message
           switch(buffer[0]) {
           case 0xF0:
@@ -551,15 +548,18 @@ rerun:
             // Unknown data byte count. Note that Real-Time messages
             // may be interleaved with a System Exclusive!
             // Every SysEx byte until 0xF7 should start with a 0-bit, so skipping is safe.
+            last_status_byte = 0;
             continue;
 
           case 0xF7:
             // System exclusive end
+            last_status_byte = 0;
             continue;
 
           case 0xF2:
             // Song Position Pointer
             data_bytes_cnt = 2;
+            last_status_byte = 0;
             break;
 
           case 0xF1:
@@ -567,22 +567,31 @@ rerun:
           case 0xF3:
             // Song Select
             data_bytes_cnt = 1;
+            last_status_byte = 0;
+            break;
+
+          case 0xF8:
+            // Clock
+          case 0xFA:
+            // Start
+          case 0xFB:
+            // Continue
+          case 0xFC:
+            // Stop
+            // NOTE: we do not reset `last_status_byte` here
+            data_bytes_cnt = 0;
             break;
 
           default:
-            // Especially these:
-            //case 0xF8: // Clock
-            //case 0xFA: // Start
-            //case 0xFB: // Continue
-            //case 0xFC: // Stop
-            // but also Tune Request and Reserved
+            // Others, like Tune Request and Reserved
             data_bytes_cnt = 0;
+            last_status_byte = 0;
             break;
           }
         }
 
         while (read_cnt < data_bytes_cnt+1) {
-          error = read_retry_or_error(serial, buffer+read_cnt, data_bytes_cnt+1U-read_cnt);
+          error = read_retry_or_error(serial, buffer+read_cnt);
 
           if (error == 0) {
             continue;
@@ -596,6 +605,30 @@ rerun:
 #endif
             goto rerun;
             break;
+          }
+
+          // Ignore or handle some stuff in the middle of voice messages
+          switch (buffer[read_cnt]) {
+          // Ignore active-sensing
+          case 0xFE:
+            continue;
+          // Handle clock messages, see below for the same code
+          case 0xF8:
+          case 0xFA:
+          case 0xFB:
+          case 0xFC:
+            {
+              // remaining bytes
+              buffer[1] = buffer[2] = 0;
+              // size
+              buffer[3] = 1;
+              // timestamp
+              const jack_nframes_t frames = jack_frame_time(jackdata->client);
+              memcpy(buffer+4, &frames, sizeof(jack_nframes_t));
+              // done
+              jack_ringbuffer_write(jackdata->ringbuffer_in, (const char *) buffer, ringbuffer_msg_size);
+            }
+            continue;
           }
 
           read_cnt += error;
